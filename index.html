@@ -2221,11 +2221,13 @@ function handleChatInput(text) {
         pendingOrder = null; chatContext = null;
         botMsg('Orden cancelada. ¿Qué más?');
       } else {
-        // Try inline field correction: "precio 8500", "corredora BTG", etc.
+        // Try inline field correction: "precio 8500", "corredora BTG", "PH", etc.
         if (tryCorrectionInline(tl, pendingOrder)) {
-          showParsedConfirm(pendingOrder);
+          // After correction, re-run validation — may still have missing fields
+          const p = pendingOrder; pendingOrder = null; chatContext = null;
+          checkMissingAndConfirm(p);
         } else {
-          botMsg('Respondé <strong>sí</strong> para confirmar, <strong>no</strong> para cancelar, o corregí un campo (ej: <em>precio 8500</em>, <em>corredora BTG</em>).');
+          botMsg('Respondé <strong>sí</strong> para confirmar, <strong>no</strong> para cancelar, o corregí un campo (ej: <em>precio 8500</em>, <em>corredora BTG</em>, <em>PH</em>).');
         }
       }
       return;
@@ -2330,12 +2332,22 @@ function handleChatInput(text) {
 function tryCorrectionInline(tl, order) {
   if (!order) return false;
   let m;
-  if ((m = tl.match(/^precio\s+(.+)/i)))     { order.precio    = parseMontoNatural(m[1]); return true; }
-  if ((m = tl.match(/^cantidad\s+(.+)/i)))   { order.cantidad  = parseMontoNatural(m[1]); return true; }
-  if ((m = tl.match(/^corredora\s+(\w+)/i))){ order.corredora = m[1].toUpperCase(); return true; }
-  if ((m = tl.match(/^cta\.?\s+(\d+)/i)))  { order.cta       = m[1]; return true; }
-  if ((m = tl.match(/^nemo\s+(\S+)/i)))     { order.nemo = m[1].toUpperCase(); order.nemoResult={resolved:m[1].toUpperCase(),exact:true}; return true; }
-  if ((m = tl.match(/^rut\s+([\d\-kK]+)/i))){ order.rut      = formatRut(m[1]); return true; }
+  // Condición — acepta PH/PM/CN directamente o como corrección explícita
+  const upTl = tl.toUpperCase().trim();
+  if (['PH','PM','CN'].includes(upTl)) {
+    order.condicion = upTl; return true;
+  }
+  if ((m = tl.match(/^condici[oó]n\s+(PH|PM|CN)/i))) { order.condicion = m[1].toUpperCase(); return true; }
+  if (/paga\s*hoy/i.test(tl))      { order.condicion = 'PH'; return true; }
+  if (/paga\s*ma[ñn]/i.test(tl))   { order.condicion = 'PM'; return true; }
+  if (/contado\s*normal/i.test(tl)) { order.condicion = 'CN'; return true; }
+
+  if ((m = tl.match(/^precio\s+(.+)/i)))      { order.precio    = parseMontoNatural(m[1]); return true; }
+  if ((m = tl.match(/^cantidad\s+(.+)/i)))    { order.cantidad  = parseMontoNatural(m[1]); return true; }
+  if ((m = tl.match(/^corredora\s+(\w+)/i))) { order.corredora = m[1].toUpperCase(); return true; }
+  if ((m = tl.match(/^cta\.?\s+(\d+)/i)))   { order.cta       = m[1]; return true; }
+  if ((m = tl.match(/^nemo\s+(\S+)/i)))      { order.nemo = m[1].toUpperCase(); order.nemoResult={resolved:m[1].toUpperCase(),exact:true}; return true; }
+  if ((m = tl.match(/^rut\s+([\d\-kK]+)/i))){ order.rut       = formatRut(m[1]); return true; }
   return false;
 }
 
@@ -3235,6 +3247,23 @@ function showAliasSuggestion(raw, candidates, fondoCandidates) {
 async function confirmarPendingOrder() {
   if (!pendingOrder) return;
   const p = pendingOrder;
+
+  // ── HARD VALIDATION — never save an incomplete order ──────────────
+  if (p.type === 'orden') {
+    const missing = [];
+    if (!p.nemo)      missing.push('nemo');
+    if (!p.rut)       missing.push('RUT');
+    if (!p.cliente)   missing.push('nombre del cliente');
+    if (!p.condicion) missing.push('condición (PH, PM o CN)');
+    if (missing.length) {
+      // Re-enter validation flow instead of saving
+      botMsg(`⚠ Faltan campos: <strong>${missing.join(', ')}</strong>. Completalos antes de confirmar.`);
+      chatContext = {state:'await_confirm'};
+      checkMissingAndConfirm(p);
+      return;
+    }
+  }
+
   pendingOrder = null;
   chatContext  = null;
   const executor = CURRENT_USER?.nombre || '—';
