@@ -1479,20 +1479,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Listen for auth state changes — this catches recovery tokens reliably
   // even when GitHub Pages drops or rewrites the URL hash
   SB.auth.onAuthStateChange(async (event, session) => {
+    // Solo manejamos PASSWORD_RECOVERY — el login normal lo maneja loginUser directamente
     if (event === 'PASSWORD_RECOVERY') {
-      // Supabase detected a recovery token — show change password modal
       document.getElementById('login-screen').style.display = 'flex';
       document.getElementById('app').style.display = 'none';
       showChangePasswordModal();
       return;
-    }
-    if (event === 'SIGNED_IN' && session?.user) {
-      // Only auto-enter app if we're not in recovery mode
-      if (document.getElementById('change-pass-overlay')) return;
-      const { data: bk } = await SB.from('banqueros').select('estado').eq('user_id', session.user.id).single();
-      if (bk?.estado === 'activo') {
-        await initApp(session.user);
-      }
     }
   });
 
