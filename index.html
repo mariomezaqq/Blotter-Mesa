@@ -702,6 +702,11 @@ tr:hover td{background:var(--surface2)}
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12V6l6-4 6 4v6"/><rect x="6" y="8" width="4" height="4"/></svg>
         Saldos
       </div>
+      <div class="nav-section">Análisis</div>
+      <div class="nav-item" onclick="showSection('resumenes',this)" id="nav-resumenes">
+        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,12 5,7 8,9 11,4 14,6"/><line x1="2" y1="14" x2="14" y2="14"/></svg>
+        Resúmenes
+      </div>
       <div class="nav-section">Gestión</div>
       <div class="nav-item" onclick="showSection('clientes',this)">
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="5" r="2.5"/><path d="M1 13c0-2.8 2.2-5 5-5"/><circle cx="12" cy="9" r="2"/><path d="M10 14c0-1.1.9-2 2-2s2 .9 2 2"/></svg>
@@ -790,7 +795,15 @@ tr:hover td{background:var(--surface2)}
                   <label>Moneda</label>
                   <select id="f-moneda"><option>CLP</option><option>USD</option><option>UF</option><option>EUR</option></select>
                 </div>
-                <div class="field f3"><label>Condición</label><input id="f-cond" type="text" placeholder="Al cierre / Límite"></div>
+                <div class="field f3">
+                  <label>Condición</label>
+                  <select id="f-cond">
+                    <option value="">— Seleccioná —</option>
+                    <option value="PH">PH · Paga Hoy</option>
+                    <option value="PM">PM · Paga Mañana</option>
+                    <option value="CN">CN · Contado Normal</option>
+                  </select>
+                </div>
                 <div class="field f2"><label>Comisión %</label><input id="f-comision" type="text" placeholder="0.3"></div>
               </div>
               <div class="form-actions">
@@ -957,6 +970,92 @@ tr:hover td{background:var(--surface2)}
           </div>
         </div>
 
+        <!-- ── RESÚMENES ── -->
+        <div id="sec-resumenes" class="section">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+            <div class="metric" style="padding:14px 16px">
+              <div class="metric-label">Monto total hoy</div>
+              <div class="metric-val mono" id="res-monto-total" style="font-size:16px">$0</div>
+              <div class="metric-sub">CLP · todas las órdenes</div>
+            </div>
+            <div class="metric" style="padding:14px 16px">
+              <div class="metric-label">Órdenes del día</div>
+              <div class="metric-val mono" id="res-ordenes-total">0</div>
+              <div class="metric-sub" id="res-banqueros-activos">0 banqueros operando</div>
+            </div>
+          </div>
+
+          <!-- Historial del banquero actual -->
+          <div class="table-wrap" style="margin-bottom:12px">
+            <div class="table-toolbar" style="justify-content:space-between">
+              <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--accent)">
+                ⏱ Mis últimas operaciones
+              </span>
+              <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="res-mis-count"></span>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Hora</th><th>Op.</th><th>Nemo</th><th>Cliente</th><th class="right">Cantidad</th><th class="right">Precio</th><th class="right">Total</th><th>Cta</th></tr></thead>
+                <tbody id="tb-mis-ordenes"><tr><td colspan="8" class="empty">Sin operaciones hoy</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <!-- Por instrumento -->
+            <div class="table-wrap">
+              <div class="table-toolbar">
+                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">🔥 Top nemos del día</span>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead><tr><th>Nemo</th><th class="right">Órdenes</th><th class="right">Monto total</th><th>Última op.</th></tr></thead>
+                  <tbody id="tb-top-nemos"><tr><td colspan="4" class="empty">Sin datos</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Por cliente -->
+            <div class="table-wrap">
+              <div class="table-toolbar">
+                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👤 Top clientes del día</span>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead><tr><th>Cliente</th><th class="right">Órdenes</th><th class="right">Monto total</th></tr></thead>
+                  <tbody id="tb-top-clientes"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Por banquero -->
+            <div class="table-wrap">
+              <div class="table-toolbar">
+                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👨‍💼 Actividad por banquero</span>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead><tr><th>Banquero</th><th class="right">Órdenes</th><th class="right">Monto</th><th>Último</th></tr></thead>
+                  <tbody id="tb-top-banqueros"><tr><td colspan="4" class="empty">Sin datos</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Por corredora -->
+            <div class="table-wrap">
+              <div class="table-toolbar">
+                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">🏦 Por corredora</span>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead><tr><th>Corredora</th><th class="right">Órdenes</th><th class="right">Monto</th></tr></thead>
+                  <tbody id="tb-top-corredoras"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- ── CONFIG ── -->
         <div id="sec-config" class="section">
           <div class="cfg-grid">
@@ -1002,6 +1101,23 @@ tr:hover td{background:var(--surface2)}
                 <button class="btn sm ok" onclick="agregarAliasManual()">+</button>
               </div>
             </div>
+            <div class="cfg-card" style="grid-column:span 2">
+              <div class="cfg-title">// BASE DE FONDOS · BOLSA DE SANTIAGO</div>
+              <div class="cfg-sub">1.338 fondos cargados. El chatbot busca por similitud y aprende los aliases que confirmás. Los más usados aparecen primero.</div>
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+                <input id="fondos-search" type="text" placeholder="Buscar fondo por nombre o nemo..."
+                  style="flex:1;min-width:200px;font-size:12px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none;font-family:var(--mono)"
+                  oninput="renderFondosCfg(this.value)">
+                <span style="font-size:10px;color:var(--text3);font-family:var(--mono)" id="fondos-cfg-count">1.338 fondos</span>
+              </div>
+              <div id="fondos-cfg-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:4px;max-height:240px;overflow-y:auto;margin-bottom:10px"></div>
+              <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
+                <div style="font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text2);font-family:var(--mono);margin-bottom:6px">🔥 Más usados</div>
+                <div id="fondos-frecuentes-cfg" style="display:flex;flex-wrap:wrap;gap:4px">
+                  <span style="font-size:11px;color:var(--text3);font-family:var(--mono)">Sin datos aún</span>
+                </div>
+              </div>
+            </div>
             <div class="cfg-card">
               <div class="cfg-title">// OUTLOOK · SESIÓN</div>
               <div class="cfg-sub">Estado de la conexión con Microsoft Outlook para envío de emails.</div>
@@ -1040,13 +1156,14 @@ tr:hover td{background:var(--surface2)}
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#0d1a0f" stroke-width="2"><line x1="14" y1="2" x2="7" y2="9"/><polygon points="14,2 9,14 7,9 2,7"/></svg>
           </button>
         </div>
-        <div class="chat-hints">
+        <div class="chat-hints" id="chat-hints-bar">
           <span class="chat-hint" onclick="fillHint('compra')">↑ compra</span>
           <span class="chat-hint" onclick="fillHint('venta')">↓ venta</span>
           <span class="chat-hint" onclick="fillHint('aporte')">+ aporte</span>
           <span class="chat-hint" onclick="fillHint('rescate')">- rescate</span>
           <span class="chat-hint" onclick="fillHint('saldo')">$ saldo</span>
         </div>
+        <div id="chat-hints-frecuentes" style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px"></div>
       </div>
     </div>
 
@@ -1231,8 +1348,8 @@ async function resetPassword() {
   const msgEl = document.getElementById('reset-msg');
   if (!email) { msgEl.textContent = 'Ingresá tu email'; return; }
 
-  // Redirect URL: la misma URL del blotter con hash #reset
-  const redirectTo = location.origin + location.pathname + '#reset';
+  // redirectTo must match exactly what's in Supabase URL Configuration
+  const redirectTo = 'https://mariomezaqq.github.io/Blotter-Mesa/';
 
   const { error } = await SB.auth.resetPasswordForEmail(email, { redirectTo });
   if (error) {
@@ -1342,25 +1459,52 @@ async function initApp(user) {
   initMSAL();
   setViewMode('chat');
   chatWelcome();
+  renderChatFrecuentes();
+}
+
+function renderChatFrecuentes() {
+  const el = document.getElementById('chat-hints-frecuentes');
+  if (!el) return;
+  const top = getTopNemos(6);
+  if (!top.length) return;
+  el.innerHTML = top.map(([nemo, count]) =>
+    `<span class="chat-hint" onclick="fillNemoHint('${nemo}')" title="${count} usos" style="color:var(--accent);border-color:var(--accent2)">🔥 ${nemo}</span>`
+  ).join('');
 }
 
 // Check session on load
 document.addEventListener('DOMContentLoaded', async () => {
   SB = supabase.createClient(SB_URL, SB_KEY);
 
-  // Handle password reset flow: Supabase redirects back with #access_token
-  const hash = location.hash;
-  if (hash && hash.includes('access_token')) {
-    const params = new URLSearchParams(hash.replace('#',''));
-    const type = params.get('type');
-    if (type === 'recovery') {
-      // Show change password modal immediately
+  // Listen for auth state changes — this catches recovery tokens reliably
+  // even when GitHub Pages drops or rewrites the URL hash
+  SB.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'PASSWORD_RECOVERY') {
+      // Supabase detected a recovery token — show change password modal
       document.getElementById('login-screen').style.display = 'flex';
-      showChangePasswordModal(params.get('access_token'));
+      document.getElementById('app').style.display = 'none';
+      showChangePasswordModal();
       return;
     }
+    if (event === 'SIGNED_IN' && session?.user) {
+      // Only auto-enter app if we're not in recovery mode
+      if (document.getElementById('change-pass-overlay')) return;
+      const { data: bk } = await SB.from('banqueros').select('estado').eq('user_id', session.user.id).single();
+      if (bk?.estado === 'activo') {
+        await initApp(session.user);
+      }
+    }
+  });
+
+  // Also check hash manually as fallback (some browsers)
+  const hash = location.hash;
+  if (hash && hash.includes('type=recovery')) {
+    document.getElementById('login-screen').style.display = 'flex';
+    // onAuthStateChange will fire PASSWORD_RECOVERY shortly — just wait
+    return;
   }
 
+  // Normal session restore
   const { data: { session } } = await SB.auth.getSession();
   if (session?.user) {
     const { data: bk } = await SB.from('banqueros').select('estado').eq('user_id', session.user.id).single();
@@ -1379,9 +1523,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-function showChangePasswordModal(token) {
-  // Create inline modal for new password
+function showChangePasswordModal() {
+  if (document.getElementById('change-pass-overlay')) return; // already shown
   const overlay = document.createElement('div');
+  overlay.id = 'change-pass-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2000;display:flex;align-items:center;justify-content:center';
   overlay.innerHTML = `
     <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--r3);width:340px;padding:28px;display:flex;flex-direction:column;gap:14px">
@@ -1417,8 +1562,12 @@ async function submitNewPassword() {
   errEl.style.color = 'var(--compra)';
   errEl.textContent = '✓ Contraseña actualizada. Ingresá con tu nueva clave.';
   setTimeout(() => {
-    window._resetOverlay?.remove();
+    document.getElementById('change-pass-overlay')?.remove();
     location.hash = '';
+    // Sign out so user logs in fresh with new password
+    SB.auth.signOut().then(() => {
+      document.getElementById('login-screen').style.display = 'flex';
+    });
   }, 2000);
 }
 
@@ -1686,7 +1835,7 @@ async function cargarConfigSupabase() {
 // ═══════════════════════════════════════════════════════════
 // NAV
 // ═══════════════════════════════════════════════════════════
-const TITLES={ordenes:'Órdenes del día',aportes:'Aportes / Rescates',saldos:'Saldos',clientes:'Base de clientes',banqueros:'Banqueros',config:'Configuración'};
+const TITLES={ordenes:'Órdenes del día',aportes:'Aportes / Rescates',saldos:'Saldos',clientes:'Base de clientes',banqueros:'Banqueros',resumenes:'Resúmenes del día',config:'Configuración'};
 async function showSection(name, el) {
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -1700,6 +1849,7 @@ async function showSection(name, el) {
   }
   if(!SB) return;
   if(name==='ordenes') await cargarOrdenes();
+  else if(name==='resumenes') await cargarResumenes();
   else if(name==='aportes') await cargarAportes();
   else if(name==='saldos') await cargarSaldos();
   else if(name==='clientes') renderClientes();
@@ -1984,14 +2134,43 @@ let chatContext = null;
 
 function chatWelcome() {
   const nombre = CURRENT_USER?.nombre?.split(' ')[0] || 'operador';
-  botMsg(`Hola ${nombre} 👋 Dictame órdenes en lenguaje natural.
 
-Ejemplos:
-• <em>compra 5000 COPEC para García RUT 12345678-9 cta 456 SMB</em>
-• <em>venta 2000 FALABELLA a Pérez 9876543-2 BTG precio 8500 al cierre</em>
-• <em>compra 100 palos de CMPC para Mario Meza</em>
-• <em>aporte 5 millones García 12345678-9 fondo BICE LIQUIDEZ</em>
-• <em>rescate total Pérez 9876543-2 cta 789</em>`);
+  // Build historial hints
+  const hist = getHistorialBanquero();
+  const topN = getTopNemos(5);
+
+  let histMsg = '';
+  if (hist.ultimoNemo.length) {
+    const nemoPills = hist.ultimoNemo.slice(0,5).map(n =>
+      `<span onclick="fillNemoHint('${n}')" style="cursor:pointer;font-family:var(--mono);font-size:10px;
+        padding:2px 8px;background:var(--accent-dim);border:1px solid var(--accent2);
+        border-radius:20px;color:var(--accent)">${n}</span>`
+    ).join(' ');
+    histMsg += `<div style="margin-top:8px">
+      <span style="font-size:10px;color:var(--text2)">Tus últimos nemos: </span>${nemoPills}
+    </div>`;
+  }
+  if (hist.ultimoCliente.length) {
+    const cliPills = hist.ultimoCliente.slice(0,3).map(c =>
+      `<span style="font-family:var(--mono);font-size:10px;padding:2px 8px;
+        background:var(--surface2);border:1px solid var(--border);
+        border-radius:20px;color:var(--text2)">${c.split(' ')[0]}</span>`
+    ).join(' ');
+    histMsg += `<div style="margin-top:4px">
+      <span style="font-size:10px;color:var(--text2)">Últimos clientes: </span>${cliPills}
+    </div>`;
+  }
+
+  botMsg(`Hola ${nombre} 👋 Dictame órdenes en lenguaje natural.${histMsg}`);
+}
+
+function fillNemoHint(nemo) {
+  const inp = document.getElementById('chat-input');
+  inp.value = `compra  ${nemo} para `;
+  inp.focus();
+  // Put cursor after "compra "
+  inp.setSelectionRange(7, 7);
+  autoResize(inp);
 }
 
 function fillHint(type) {
@@ -2484,9 +2663,12 @@ function parseOrden(text, forceOp) {
 
   const {cantidad, precio, monto} = extractCantidadYPrecio(text);
 
+  // Condición OBLIGATORIA: PH (Paga Hoy), PM (Paga Mañana), CN (Contado Normal)
   let condicion = '';
-  const condM = text.match(/(?:al\s+)?(cierre|apertura|l[íi]mite|mercado|mejor precio)/i);
-  if (condM) condicion = condM[0].trim();
+  const upT = text.toUpperCase();
+  if (/\bPH\b/.test(upT) || /\b(paga\s+hoy|pagahoy)\b/i.test(text))       condicion = 'PH';
+  else if (/\bPM\b/.test(upT) || /\b(paga\s+ma[ñn]ana|pagama[ñn]ana)\b/i.test(text)) condicion = 'PM';
+  else if (/\bCN\b/.test(upT) || /\b(contado\s+normal|contadonormal)\b/i.test(text)) condicion = 'CN';
 
   let moneda = 'CLP';
   if (/\bUSD\b|d[oó]lar/i.test(text)) moneda = 'USD';
@@ -2597,6 +2779,30 @@ function checkMissingAndConfirm(parsed) {
     return;
   }
 
+  // Condición obligatoria para órdenes
+  if (parsed.type === 'orden' && !parsed.condicion) {
+    chatContext = {state:'await_missing_field', field:'condicion', parsed};
+    botMsg('¿Cuál es la condición de la orden?',
+      `<div class="alias-suggestion" style="margin-top:6px">
+        <div class="alias-sug-title">Seleccioná la condición</div>
+        <div class="alias-sug-opts">
+          <button class="alias-opt" onclick="selectCondicionBtn('PH')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+            <span style="font-weight:600;color:var(--accent)">PH</span>
+            <span style="font-size:10px;color:var(--text2)">Paga Hoy</span>
+          </button>
+          <button class="alias-opt" onclick="selectCondicionBtn('PM')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+            <span style="font-weight:600;color:var(--accent)">PM</span>
+            <span style="font-size:10px;color:var(--text2)">Paga Mañana</span>
+          </button>
+          <button class="alias-opt" onclick="selectCondicionBtn('CN')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+            <span style="font-weight:600;color:var(--accent)">CN</span>
+            <span style="font-size:10px;color:var(--text2)">Contado Normal</span>
+          </button>
+        </div>
+      </div>`);
+    return;
+  }
+
   // If client has multiple accounts and none specified → ask
   if (!parsed.cta && parsed.clienteResult?.cliente) {
     const cuentas = parsed.clienteResult.cliente.cuentas || [];
@@ -2672,6 +2878,14 @@ function selectCuentaAporteBtn(cta, corredora) {
   const p = chatContext.parsed; chatContext = null;
   pendingOrder = p; chatContext = {state:'await_confirm'};
   showParsedConfirm(p);
+}
+
+function selectCondicionBtn(cond) {
+  if (!chatContext?.parsed) return;
+  chatContext.parsed.condicion = cond;
+  const p = chatContext.parsed;
+  chatContext = null;
+  checkMissingAndConfirm(p);
 }
 
 function selectCuentaBtn(cta, corredora) {
@@ -2770,8 +2984,17 @@ function handleMissingField(text) {
     }
     case 'nombre':  parsed.cliente  = text.trim().toUpperCase(); break;
     case 'nemo':    parsed.nemo     = text.trim().toUpperCase(); parsed.nemoResult={resolved:parsed.nemo,exact:true}; break;
-    case 'precio':  parsed.precio   = parseMontoNatural(text); break;
-    case 'cantidad':parsed.cantidad = parseMontoNatural(text); break;
+    case 'precio':    parsed.precio    = parseMontoNatural(text); break;
+    case 'cantidad':  parsed.cantidad  = parseMontoNatural(text); break;
+    case 'condicion': {
+      const up = text.trim().toUpperCase();
+      if (['PH','PM','CN'].includes(up)) parsed.condicion = up;
+      else if (/paga\s*hoy/i.test(text)) parsed.condicion = 'PH';
+      else if (/paga\s*ma/i.test(text))  parsed.condicion = 'PM';
+      else if (/contado/i.test(text))    parsed.condicion = 'CN';
+      else { botMsg('Condición inválida. Seleccioná <strong>PH</strong>, <strong>PM</strong> o <strong>CN</strong>.'); return; }
+      break;
+    }
   }
   checkMissingAndConfirm(parsed);
 }
@@ -2937,7 +3160,7 @@ function showParsedConfirm(p) {
       p.precio    ? ['Precio',    '$'+Number(p.precio).toLocaleString('es-CL')]   : null,
       p.monto && !p.cantidad ? ['Monto aprox.', '$'+Number(p.monto).toLocaleString('es-CL')] : null,
       montoTotal  ? ['Total P×Q',  '<strong style="color:var(--accent)">$'+Math.round(montoTotal).toLocaleString('es-CL')+'</strong>'] : null,
-      p.condicion ? ['Condición', p.condicion]   : null,
+      ['Condición', p.condicion ? `<strong style="color:var(--accent)">${p.condicion}</strong> · ${p.condicion==='PH'?'Paga Hoy':p.condicion==='PM'?'Paga Mañana':'Contado Normal'}` : '<span style="color:var(--warn)">⚠ Sin condición</span>'],
       ['Moneda',      p.moneda||'CLP'],
       ['Ejecuta',     CURRENT_USER?.nombre||'—'],
     ].filter(Boolean);
@@ -3044,6 +3267,7 @@ async function confirmarPendingOrder() {
       emailMsg = ' · (conectá Outlook para enviar email)';
     }
     botMsg(`✅ Orden guardada${emailMsg}`);
+    trackUso(p.nemo, p.cliente);
     if (isActive('ordenes')) await cargarOrdenes();
     else showSection('ordenes', document.querySelector('.nav-item'));
 
@@ -3120,6 +3344,249 @@ function scrollChat()   { const m=document.getElementById('chat-messages'); m.sc
 function escHtml(s)     { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // ═══════════════════════════════════════════════════════════
+// FRECUENCIA DE USO — track nemos and clients locally
+// ═══════════════════════════════════════════════════════════
+function trackUso(nemo, cliente) {
+  if (!nemo) return;
+  try {
+    const key = 'blotter_frecuencia';
+    const raw = localStorage.getItem(key);
+    const data = raw ? JSON.parse(raw) : {nemos:{}, clientes:{}, ultimoNemo:[], ultimoCliente:[]};
+
+    // Nemos
+    if (nemo) {
+      data.nemos[nemo] = (data.nemos[nemo] || 0) + 1;
+      data.ultimoNemo = [nemo, ...(data.ultimoNemo||[]).filter(n=>n!==nemo)].slice(0,10);
+    }
+    // Clientes
+    if (cliente) {
+      data.clientes[cliente] = (data.clientes[cliente] || 0) + 1;
+      data.ultimoCliente = [cliente, ...(data.ultimoCliente||[]).filter(c=>c!==cliente)].slice(0,10);
+    }
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch(e) {}
+}
+
+function getTopNemos(n=10) {
+  try {
+    const data = JSON.parse(localStorage.getItem('blotter_frecuencia')||'{}');
+    return Object.entries(data.nemos||{}).sort((a,b)=>b[1]-a[1]).slice(0,n);
+  } catch { return []; }
+}
+
+function getHistorialBanquero() {
+  try {
+    const data = JSON.parse(localStorage.getItem('blotter_frecuencia')||'{}');
+    return {ultimoNemo: data.ultimoNemo||[], ultimoCliente: data.ultimoCliente||[]};
+  } catch { return {ultimoNemo:[], ultimoCliente:[]}; }
+}
+
+// ═══════════════════════════════════════════════════════════
+// RESÚMENES DEL DÍA
+// ═══════════════════════════════════════════════════════════
+async function cargarResumenes() {
+  const { data: ordenes } = await SB.from('ordenes').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
+  const { data: aportes } = await SB.from('aportes').select('*').eq('fecha',todayStr());
+  const todos = ordenes || [];
+  const aportesTodos = aportes || [];
+
+  // ── Header metrics ──
+  const montoTotal = todos.reduce((a,o) => a + ((o.precio||0)*(o.cantidad||0)), 0);
+  const banquerosActivos = new Set(todos.map(o=>o.ejecutado_por).filter(Boolean)).size;
+  document.getElementById('res-monto-total').textContent = '$'+Math.round(montoTotal).toLocaleString('es-CL');
+  document.getElementById('res-ordenes-total').textContent = todos.length;
+  document.getElementById('res-banqueros-activos').textContent = `${banquerosActivos} banquero${banquerosActivos!==1?'s':''} operando hoy`;
+
+  // ── Mis operaciones (historial banquero actual) ──
+  const misOrdenes = todos.filter(o => o.ejecutado_por === CURRENT_USER?.nombre);
+  document.getElementById('res-mis-count').textContent = `${misOrdenes.length} operaciones`;
+  const tbMis = document.getElementById('tb-mis-ordenes');
+  if (!misOrdenes.length) {
+    tbMis.innerHTML = `<tr><td colspan="8" class="empty">Sin operaciones hoy</td></tr>`;
+  } else {
+    tbMis.innerHTML = misOrdenes.map(o => {
+      const total = (o.precio||0)*(o.cantidad||0);
+      const hora  = o.created_at ? new Date(o.created_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) : '—';
+      return `<tr>
+        <td class="mono" style="color:var(--text2)">${hora}</td>
+        <td><span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
+        <td class="mono" style="font-weight:600">${o.nemo||'—'}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${o.cliente}</td>
+        <td class="right mono">${o.cantidad?Number(o.cantidad).toLocaleString('es-CL'):'—'}</td>
+        <td class="right mono">${o.precio?'$'+Number(o.precio).toLocaleString('es-CL'):'—'}</td>
+        <td class="right mono" style="color:var(--accent);font-weight:600">${total?'$'+Math.round(total).toLocaleString('es-CL'):'—'}</td>
+        <td class="mono">${o.cta||'—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ── Top nemos ──
+  const nemoMap = {};
+  todos.forEach(o => {
+    if (!o.nemo) return;
+    if (!nemoMap[o.nemo]) nemoMap[o.nemo] = {ordenes:0, monto:0, ultima:o.operacion};
+    nemoMap[o.nemo].ordenes++;
+    nemoMap[o.nemo].monto += (o.precio||0)*(o.cantidad||0);
+  });
+  const topNemos = Object.entries(nemoMap).sort((a,b)=>b[1].monto-a[1].monto).slice(0,10);
+  const tbNemos = document.getElementById('tb-top-nemos');
+  if (!topNemos.length) {
+    tbNemos.innerHTML = `<tr><td colspan="4" class="empty">Sin datos</td></tr>`;
+  } else {
+    const maxMonto = topNemos[0][1].monto || 1;
+    tbNemos.innerHTML = topNemos.map(([nemo, d]) => {
+      const pct = Math.round(d.monto/maxMonto*100);
+      return `<tr>
+        <td>
+          <div style="font-family:var(--mono);font-weight:600">${nemo}</div>
+          <div style="height:3px;background:var(--surface3);border-radius:2px;margin-top:4px;width:100%">
+            <div style="height:3px;background:var(--accent);border-radius:2px;width:${pct}%"></div>
+          </div>
+        </td>
+        <td class="right mono">${d.ordenes}</td>
+        <td class="right mono" style="font-weight:600">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
+        <td><span class="pill ${d.ultima==='COMPRA'?'compra':'venta'}" style="font-size:9px">${d.ultima}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ── Top clientes ──
+  const clienteMap = {};
+  todos.forEach(o => {
+    if (!o.cliente) return;
+    if (!clienteMap[o.cliente]) clienteMap[o.cliente] = {ordenes:0, monto:0};
+    clienteMap[o.cliente].ordenes++;
+    clienteMap[o.cliente].monto += (o.precio||0)*(o.cantidad||0);
+  });
+  const topClientes = Object.entries(clienteMap).sort((a,b)=>b[1].monto-a[1].monto).slice(0,8);
+  const tbClientes = document.getElementById('tb-top-clientes');
+  if (!topClientes.length) {
+    tbClientes.innerHTML = `<tr><td colspan="3" class="empty">Sin datos</td></tr>`;
+  } else {
+    tbClientes.innerHTML = topClientes.map(([cli, d]) => `<tr>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${cli}</td>
+      <td class="right mono">${d.ordenes}</td>
+      <td class="right mono" style="font-weight:600">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
+    </tr>`).join('');
+  }
+
+  // ── Top banqueros ──
+  const banqueroMap = {};
+  todos.forEach(o => {
+    if (!o.ejecutado_por) return;
+    if (!banqueroMap[o.ejecutado_por]) banqueroMap[o.ejecutado_por] = {ordenes:0, monto:0, ultima:'—'};
+    banqueroMap[o.ejecutado_por].ordenes++;
+    banqueroMap[o.ejecutado_por].monto += (o.precio||0)*(o.cantidad||0);
+    if (o.created_at) banqueroMap[o.ejecutado_por].ultima =
+      new Date(o.created_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+  });
+  const topBanqueros = Object.entries(banqueroMap).sort((a,b)=>b[1].ordenes-a[1].ordenes);
+  const tbBanqueros = document.getElementById('tb-top-banqueros');
+  if (!topBanqueros.length) {
+    tbBanqueros.innerHTML = `<tr><td colspan="4" class="empty">Sin datos</td></tr>`;
+  } else {
+    tbBanqueros.innerHTML = topBanqueros.map(([b, d]) => {
+      const isMine = b === CURRENT_USER?.nombre;
+      return `<tr style="${isMine?'background:var(--accent-dim)':''}">
+        <td style="font-weight:${isMine?'600':'400'};color:${isMine?'var(--accent)':'var(--text)'}">${b}${isMine?' ★':''}</td>
+        <td class="right mono">${d.ordenes}</td>
+        <td class="right mono">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
+        <td class="mono" style="color:var(--text2)">${d.ultima}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ── Top corredoras ──
+  const corrMap = {};
+  todos.forEach(o => {
+    const k = o.corredora||'Sin corredora';
+    if (!corrMap[k]) corrMap[k] = {ordenes:0, monto:0};
+    corrMap[k].ordenes++;
+    corrMap[k].monto += (o.precio||0)*(o.cantidad||0);
+  });
+  const topCorr = Object.entries(corrMap).sort((a,b)=>b[1].monto-a[1].monto);
+  const tbCorr = document.getElementById('tb-top-corredoras');
+  if (!topCorr.length) {
+    tbCorr.innerHTML = `<tr><td colspan="3" class="empty">Sin datos</td></tr>`;
+  } else {
+    tbCorr.innerHTML = topCorr.map(([c,d]) => `<tr>
+      <td class="mono" style="font-weight:600">${c}</td>
+      <td class="right mono">${d.ordenes}</td>
+      <td class="right mono" style="font-weight:600">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
+    </tr>`).join('');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// FONDOS CONFIG UI
+// ═══════════════════════════════════════════════════════════
+function renderFondosCfg(query) {
+  const grid  = document.getElementById('fondos-cfg-grid');
+  const count = document.getElementById('fondos-cfg-count');
+  if (!grid || typeof FONDOS_DB === 'undefined') return;
+
+  const q = (query||'').toUpperCase().trim();
+  const top = getTopNemos(20).map(([n])=>n);
+
+  // Filter
+  let items = FONDOS_DB;
+  if (q.length >= 2) {
+    items = FONDOS_DB.filter(f =>
+      f.nemo.toUpperCase().includes(q) ||
+      f.nombre.toUpperCase().includes(q) ||
+      f.aliases.some(a => a.includes(q))
+    ).slice(0, 80);
+  } else {
+    // No query: show frecuentes first, then first 40
+    const frecNemos = new Set(top);
+    const frecItems = FONDOS_DB.filter(f => frecNemos.has(f.nemo));
+    const restItems = FONDOS_DB.filter(f => !frecNemos.has(f.nemo)).slice(0, 40 - frecItems.length);
+    items = [...frecItems, ...restItems];
+  }
+
+  count.textContent = q ? `${items.length} resultados` : `${FONDOS_DB.length} fondos`;
+
+  grid.innerHTML = items.map(f => {
+    const isFrq = top.includes(f.nemo);
+    const nombre = f.nombre.replace(/Fondo de Inversión|Fondo Mutuo/gi,'').trim();
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;
+      background:${isFrq?'var(--accent-dim)':'var(--surface2)'};
+      border:1px solid ${isFrq?'var(--accent2)':'var(--border)'};
+      border-radius:var(--r);cursor:default" title="${f.nombre}">
+      ${isFrq?'<span style="font-size:9px;color:var(--accent)">🔥</span>':''}
+      <span style="font-family:var(--mono);font-size:10px;font-weight:600;color:${isFrq?'var(--accent)':'var(--text2)'};min-width:80px">${f.nemo}</span>
+      <span style="font-size:10px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${nombre.slice(0,40)}${f.serie?' · '+f.serie:''}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderFondosFrecuentes() {
+  const el = document.getElementById('fondos-frecuentes-cfg');
+  if (!el) return;
+  const top = getTopNemos(15);
+  if (!top.length) {
+    el.innerHTML = '<span style="font-size:11px;color:var(--text3);font-family:var(--mono)">Sin datos aún — se registran al confirmar órdenes</span>';
+    return;
+  }
+  el.innerHTML = top.map(([nemo, count]) => {
+    const fondo = FONDOS_DB?.find(f=>f.nemo===nemo);
+    const nombre = fondo ? fondo.nombre.replace(/Fondo de Inversión|Fondo Mutuo/gi,'').trim().slice(0,30) : nemo;
+    return `<div style="display:flex;align-items:center;gap:6px;padding:4px 10px;
+      background:var(--surface2);border:1px solid var(--border2);border-radius:20px;
+      font-size:10px;font-family:var(--mono)">
+      <span style="font-weight:600;color:var(--accent)">${nemo}</span>
+      <span style="color:var(--text2)">${nombre}</span>
+      <span style="background:var(--accent-dim);color:var(--accent);padding:1px 5px;border-radius:10px;font-size:9px">${count}×</span>
+    </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────
+// Inject frecuencia tracking into confirmarPendingOrder
+// Called after successful order save
+// ─────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════
 // CONFIG UI
 // ═══════════════════════════════════════════════════════════
 function renderConfigUI() {
@@ -3129,6 +3596,8 @@ function renderConfigUI() {
   document.getElementById('cfg-tenant-id').value=tenantId;
   renderCorredorasUI();
   renderAliasConfig();
+  renderFondosCfg('');
+  renderFondosFrecuentes();
 }
 function renderCorredorasUI() {
   const entries = Object.entries(corredorasConfig);
@@ -3219,8 +3688,9 @@ async function autoGuardarCliente(rut, nombre, cta, corredora) {
 }
 async function guardarOrden() {
   if(!ordenOp){msg('o-msg','Seleccioná Compra o Venta',false);return;}
-  const rut=val('f-rut'),cliente=val('f-cliente');
+  const rut=val('f-rut'),cliente=val('f-cliente'),condForm=val('f-cond');
   if(!rut||!cliente){msg('o-msg','RUT y cliente son obligatorios',false);return;}
+  if(!condForm){msg('o-msg','Seleccioná la condición (PH, PM o CN)',false);return;}
   const corredora=val('f-corredora');
   const enviar=document.getElementById('chk-email').checked;
   const executor=CURRENT_USER?.nombre||'—';
