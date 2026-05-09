@@ -1095,6 +1095,10 @@ let NEMO_ALIASES = {
   'CENCOSUD': ['CENC','CENCO','CENCOCI'],
   'BCI': ['BCICI','BCIa'],
   'AGUAS-A': ['AGUAS','AGUASCI','ESVAL'],
+  'LTM':      ['LATAM','LATAM CI','LAN'],
+  'ITAUCL':   ['ITAU','ITAUCI'],
+  'SECURITY': ['SECU','SECURITYCI'],
+  'BSANTANDER':['BSAN','BSANT','SANTANDER CI'],
 };
 
 // CHAT state
@@ -1179,10 +1183,11 @@ async function initApp(user) {
   
   // Load banker profile
   const { data: bk } = await SB.from('banqueros').select('*').eq('user_id', user.id).single();
-  const nombre = bk?.nombre || user.email.split('@')[0];
-  const rol    = bk?.rol    || 'banquero';
+  const nombre = (bk?.nombre || user.email.split('@')[0]).trim();
+  const rol    = (bk?.rol    || 'banquero').trim().toLowerCase();
   const ini    = nombre.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
   CURRENT_USER = { id: user.id, email: user.email, nombre, rol, iniciales: ini, bk_id: bk?.id };
+  console.log('[Auth] Usuario cargado:', nombre, '| rol:', rol, '| estado:', bk?.estado);
   
   // Update UI
   document.getElementById('sb-avatar').textContent = ini;
@@ -1432,8 +1437,11 @@ async function bloquearBanquero(id) {
 }
 
 async function loadBanqueros() {
-  const { data } = await SB.from('banqueros').select('*').order('nombre');
+  // Fetch all banqueros regardless of estado so admin sees pending requests
+  const { data, error } = await SB.from('banqueros').select('*').order('nombre');
+  if (error) console.warn('loadBanqueros error:', error.message);
   BANKERS_DB = data || [];
+  console.log('[Banqueros] Cargados:', BANKERS_DB.length, '| Pendientes:', BANKERS_DB.filter(b=>b.estado==='pendiente').length);
   renderBanqueros();
   // Update pending badge in nav
   const pending = BANKERS_DB.filter(b => b.estado === 'pendiente').length;
@@ -1504,7 +1512,11 @@ async function showSection(name, el) {
   else if(name==='aportes') await cargarAportes();
   else if(name==='saldos') await cargarSaldos();
   else if(name==='clientes') renderClientes();
-  else if(name==='banqueros') { await loadBanqueros(); renderBanqueros(); }
+  else if(name==='banqueros') {
+    await loadBanqueros();
+    renderBanqueros();
+    console.log('[Banqueros] CURRENT_USER rol:', CURRENT_USER?.rol, '| isAdmin:', ['admin','administrador'].includes((CURRENT_USER?.rol||'').toLowerCase()));
+  }
   else if(name==='config') renderConfigUI();
 }
 function setOp(op) {
@@ -1652,7 +1664,8 @@ function renderClientes() {
     </div></div>`).join('');
 }
 function renderBanqueros() {
-  const isAdmin = CURRENT_USER?.rol === 'admin';
+  // Check both in-memory and loaded profile
+  const isAdmin = ['admin','administrador','administrator'].includes((CURRENT_USER?.rol||'').trim().toLowerCase());
   const activos   = BANKERS_DB.filter(b => b.estado === 'activo' || !b.estado);
   const pendientes= BANKERS_DB.filter(b => b.estado === 'pendiente');
   const bloqueados= BANKERS_DB.filter(b => b.estado === 'bloqueado');
@@ -1815,6 +1828,11 @@ function sendChat() {
 
 // ── Central dispatcher — routes based on chatContext state ──
 function handleChatInput(text) {
+  // Strip saludos y ruido al inicio
+  text = text
+    .replace(/^(hola[,!.]*|buenas[,!.]*|buen[ao]s?\s+d[íi]as?[,!.]*|hey[,!.]*|che[,!.]*|buen[ao][,!.]*)\s*/i, '')
+    .replace(/^[,!.\s]+/, '').trim();
+  if (!text) return;
   const tl = text.trim().toLowerCase();
 
   // Global cancel
@@ -1911,6 +1929,19 @@ function handleChatInput(text) {
         chatContext = null;
         pendingOrder = p;
         chatContext = {state:'await_confirm'};
+        showParsedConfirm(p);
+      }
+      return;
+
+    case 'await_missing_aporte':
+      handleMissingAporte(text.trim());
+      return;
+
+    case 'await_cuenta_aporte':
+      if (chatContext.parsed) {
+        chatContext.parsed.cta = text.trim();
+        const p = chatContext.parsed; chatContext = null;
+        pendingOrder = p; chatContext = {state:'await_confirm'};
         showParsedConfirm(p);
       }
       return;
@@ -2093,8 +2124,12 @@ function resolveCliente(text) {
     nemoWords.add(nemo.toUpperCase());
     aliases.forEach(a => nemoWords.add(a.toUpperCase()));
   }
+  const FUND_WORDS = new Set(['LIQUIDEZ','ALTERNATIVA','ENFOQUE','RENTA','FIJA','VARIABLE',
+    'PLAZO','TOTAL','DEUDA','LATAM','BICE','BTG','SANTANDER','ITAU','SECURITY',
+    'LARRAIN','CREDICORP','VALORES','NP','LTM']);
   const words = up.split(/\s+/).filter(w =>
-    w.length > 2 && !STOP.has(w) && !KNOWN_BROKERS.has(w) && !nemoWords.has(w) && !/^\d/.test(w)
+    w.length > 2 && !STOP.has(w) && !KNOWN_BROKERS.has(w)
+    && !nemoWords.has(w) && !FUND_WORDS.has(w) && !/^\d/.test(w)
   );
 
   let best = null, bestScore = 0;
@@ -2122,7 +2157,7 @@ function formatRut(r) {
 }
 
 function extractNameCandidate(text) {
-  const SKIPRE = /^(compra|comprar|venta|vender|vendo|vende|para|con|de|la|el|un|una|los|por|via|cta|cuenta|rut|al|en|precio|cuotas|acciones|palos|millones|lucas|fondo|serie|rescate|aporte|saldo|hacer|haceme|haz|haga|quiero|una|a|total|deuda|lv|lc|vp|\d.*)$/i;
+  const SKIPRE = /^(compra|comprar|venta|vender|vendo|vende|para|con|de|la|el|un|una|los|por|via|cta|cuenta|rut|al|en|precio|cuotas|acciones|palos|millones|lucas|fondo|serie|rescate|aporte|saldo|hacer|haceme|haz|haga|quiero|una|a|total|deuda|alternativa|liquidez|enfoque|renta|fija|variable|plazo|btg|latam|bice|itau|santander|lv|lc|vp|smb|mbi|np|e|\d.*)$/i;
   const KNOWN_BROKERS = new Set(['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC']);
   // Build full set of words to skip: nemo keys + all their aliases
   const nemoWords = new Set();
@@ -2225,7 +2260,9 @@ function parseOrden(text, forceOp) {
   const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
   if (ctaM) cta = ctaM[1];
 
-  const nemoFound  = extractNemoFromText(text);
+  // Strip typo connectors: "e", "y" before nemo (e.g. "palos e LTM" → "palos LTM")
+  const textClean = text.replace(/\b(e|y)\s+([A-Z])/gi, '$2');
+  const nemoFound  = extractNemoFromText(textClean);
   const nemoResult = nemoFound ? nemoFound.result : {resolved:'', unknown:true};
   const nemoRaw    = nemoFound?.raw || '';
 
@@ -2293,8 +2330,12 @@ function parseOrden(text, forceOp) {
 }
 
 function checkMissingAndConfirm(parsed) {
-  // Required: nemo, cliente or rut
-  // Nice-to-have: ask cuenta if client has multiple and none specified
+  // Required: nemo (for orders), cliente or rut
+  if (parsed.type === 'orden' && !parsed.nemo) {
+    chatContext = {state:'await_missing_field', field:'nemo', parsed};
+    botMsg('¿Cuál es el nemo del instrumento?');
+    return;
+  }
   if (!parsed.rut) {
     chatContext = {state:'await_missing_field', field:'rut', parsed};
     botMsg(`¿Cuál es el RUT de <strong>${parsed.cliente||'el cliente'}</strong>?`);
@@ -2354,6 +2395,34 @@ function buildNemoSuggestionsHtml(nemoRaw) {
 }
 
 function handleNemoClarifyBtn(nemo) { handleNemoClarify(nemo); }
+
+function handleMissingAporte(text) {
+  const {field, parsed} = chatContext || {};
+  if (!parsed) return;
+  switch(field) {
+    case 'rut': {
+      const rutM = text.match(/\d{7,8}-?[\dKk]/);
+      if (!rutM) { botMsg('RUT inválido. Formato: <em>12345678-9</em>'); return; }
+      parsed.rut = formatRut(rutM[0]);
+      break;
+    }
+    case 'nombre':  parsed.cliente  = text.trim().toUpperCase(); break;
+    case 'monto':   parsed.monto    = parseMontoNatural(text); break;
+    case 'fondo':   parsed.fondo    = text.trim().toUpperCase(); break;
+    case 'cta':     parsed.cta      = text.trim(); break;
+  }
+  chatContext = null;
+  checkMissingAporte(parsed);
+}
+
+function selectCuentaAporteBtn(cta, corredora) {
+  if (!chatContext?.parsed) return;
+  chatContext.parsed.cta = cta;
+  if (corredora && !chatContext.parsed.corredora) chatContext.parsed.corredora = corredora;
+  const p = chatContext.parsed; chatContext = null;
+  pendingOrder = p; chatContext = {state:'await_confirm'};
+  showParsedConfirm(p);
+}
 
 function selectCuentaBtn(cta, corredora) {
   if (!chatContext?.parsed) return;
@@ -2463,18 +2532,26 @@ function handleMissingField(text) {
 function parseAporte(text, forceInstruccion) {
   let instruccion = forceInstruccion || 'Aporte';
   if (!forceInstruccion) {
-    if (/rescate/i.test(text))           instruccion = 'Rescate';
-    else if (/transferencia/i.test(text)) instruccion = 'Transferencia';
+    if (/rescate/i.test(text))             instruccion = 'Rescate';
+    else if (/transferencia/i.test(text))  instruccion = 'Transferencia';
     else if (/suscripci[oó]n/i.test(text)) instruccion = 'Suscripción';
   }
 
-  // Monto
-  const nums = text.match(/[\d.,]+(?:\s*(?:millones?|palos?|lucas?|k|M))?/gi) || [];
-  const monto = nums.length ? parseMontoNatural(nums[0]) : null;
+  // Monto — usar parseMontoNatural para soportar "50 palos", "5 millones"
+  const montoM = text.match(/(\d[\d.,]*)\s*(palos?|millones?|mm?\b)/i);
+  const monto = montoM ? parseMontoNatural(montoM[0])
+    : (() => { const n = text.match(/\b(\d[\d.,]*)\b/); return n ? parseMontoNatural(n[1]) : null; })();
 
+  // Fondo: "del enfoque", "fondo BTG LIQUIDEZ", "al BTG", etc.
   let fondo = '';
-  const fondoM = text.match(/(?:fondo|fm|fdo|en)\s+([A-ZÁÉÍÓÚ][A-ZÁÉÍÓÚ\s]+?)(?:\s+serie|\s+rut|\s+cta|\s+\d|$)/i);
-  if (fondoM) fondo = fondoM[1].trim().toUpperCase();
+  const fondoPatterns = [
+    /(?:fondo|fm|fdo|del?|al?)\s+([A-ZÁÉÍÓÚ][A-ZÁÉÍÓÚ\s\.]+?)(?:\s+(?:serie|rut|cta|cuenta|por|a|\d)|$)/i,
+    /(?:en|de)\s+([A-ZÁÉÍÓÚ][A-ZÁÉÍÓÚ\s]{3,})(?:\s+(?:por|a|rut|cta)|$)/i,
+  ];
+  for (const re of fondoPatterns) {
+    const m = text.match(re);
+    if (m && m[1].trim().length > 2) { fondo = m[1].trim().toUpperCase(); break; }
+  }
 
   let serie = '';
   const serieM = text.match(/serie\s+([A-Z0-9\-]+)/i);
@@ -2484,6 +2561,13 @@ function parseAporte(text, forceInstruccion) {
   const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
   if (ctaM) cta = ctaM[1];
 
+  // Corredora para aportes (para saber a quién enviar)
+  let corredora = '';
+  const KNOWN_BROKERS = ['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC'];
+  const corrExpl = text.match(/(?:por|v[ií]a|corredora)\s+([A-Z]{2,10})/i);
+  if (corrExpl) corredora = corrExpl[1].toUpperCase();
+  else { for (const k of KNOWN_BROKERS) { if (text.toUpperCase().includes(k)) { corredora=k; break; } } }
+
   let formaPago = '';
   if (/transferencia bancaria/i.test(text)) formaPago = 'Transferencia bancaria';
   else if (/cargo/i.test(text))             formaPago = 'Cargo en cuenta';
@@ -2491,25 +2575,70 @@ function parseAporte(text, forceInstruccion) {
 
   const clientResult = resolveCliente(text);
   const parsed = {
-    type:'aporte', instruccion, monto, fondo, serie, cta, formaPago,
+    type:'aporte', instruccion, monto, fondo, serie, cta, corredora, formaPago,
     cliente: clientResult?.nombre || '',
     rut:     clientResult?.rut    || '',
     clienteResult: clientResult
   };
 
+  // Cliente desconocido → preguntar
   if (!clientResult || clientResult.unknown) {
     const name = clientResult?.nombre || extractNameCandidate(text) || '';
     parsed.cliente = name;
     chatContext = {state:'await_new_client_confirm', parsed};
-    const msg = clientResult?.rut
+    const msgTxt = clientResult?.rut
       ? `RUT <strong>${clientResult.rut}</strong> no está registrado. ¿Lo agregamos?`
-      : name
-        ? `No encontré a <strong>${name}</strong>. ¿Es un cliente nuevo?`
-        : 'No encontré al cliente. ¿Querés agregarlo?';
-    botMsg(msg, buildNewClientHtml(name, clientResult?.rut||''));
+      : name ? `No encontré a <strong>${name}</strong>. ¿Es cliente nuevo?`
+             : 'No encontré al cliente. ¿Querés agregarlo?';
+    botMsg(msgTxt, buildNewClientHtml(name, clientResult?.rut||''));
     return;
   }
 
+  checkMissingAporte(parsed);
+}
+
+// Validación secuencial para aportes — pide campos faltantes uno a uno
+function checkMissingAporte(parsed) {
+  if (!parsed.rut) {
+    chatContext = {state:'await_missing_aporte', field:'rut', parsed};
+    botMsg(`¿Cuál es el RUT de <strong>${parsed.cliente||'el cliente'}</strong>?`);
+    return;
+  }
+  if (!parsed.cliente) {
+    chatContext = {state:'await_missing_aporte', field:'nombre', parsed};
+    botMsg(`¿Nombre del cliente con RUT <strong>${parsed.rut}</strong>?`);
+    return;
+  }
+  if (!parsed.monto) {
+    chatContext = {state:'await_missing_aporte', field:'monto', parsed};
+    botMsg(`¿Cuál es el monto del ${parsed.instruccion.toLowerCase()}? (ej: <em>5 millones</em>, <em>1500000</em>)`);
+    return;
+  }
+  if (!parsed.fondo) {
+    chatContext = {state:'await_missing_aporte', field:'fondo', parsed};
+    botMsg(`¿A qué fondo es el ${parsed.instruccion.toLowerCase()}? (ej: <em>BTG LIQUIDEZ</em>, <em>BICE DEUDA</em>)`);
+    return;
+  }
+  if (!parsed.cta && parsed.clienteResult?.cliente) {
+    const cuentas = parsed.clienteResult.cliente.cuentas || [];
+    if (cuentas.length > 1) {
+      chatContext = {state:'await_cuenta_aporte', parsed};
+      const opts = cuentas.map(cu =>
+        `<button class="alias-opt" onclick="selectCuentaAporteBtn('${cu.cta}','${cu.corredora||''}')">`+
+        `Cta. ${cu.cta}${cu.corredora?' · '+cu.corredora:''}</button>`
+      ).join('');
+      botMsg(`¿Desde qué cuenta?`,
+        `<div class="alias-suggestion" style="margin-top:6px">
+          <div class="alias-sug-title">Seleccioná la cuenta</div>
+          <div class="alias-sug-opts">${opts}</div>
+        </div>`);
+      return;
+    }
+    if (cuentas.length === 1) {
+      parsed.cta = cuentas[0].cta;
+      if (!parsed.corredora && cuentas[0].corredora) parsed.corredora = cuentas[0].corredora;
+    }
+  }
   pendingOrder = parsed;
   chatContext  = {state:'await_confirm'};
   showParsedConfirm(parsed);
@@ -2568,14 +2697,15 @@ function showParsedConfirm(p) {
     colorStyle = 'color:var(--info)';
     rows = [
       ['Instrucción', `<span style="${colorStyle};font-weight:700">${p.instruccion}</span>`],
-      ['Cliente',     p.cliente || '—'],
-      ['RUT',         p.rut     || '—'],
-      p.cta       ? ['Cuenta',    p.cta]       : null,
-      p.fondo     ? ['Fondo',     p.fondo]     : null,
-      p.serie     ? ['Serie',     p.serie]     : null,
-      p.monto     ? ['Monto',     '$'+Number(p.monto).toLocaleString('es-CL')] : null,
-      p.formaPago ? ['Forma pago',p.formaPago] : null,
-      ['Ejecuta',     CURRENT_USER?.nombre||'—'],
+      ['Cliente',     p.cliente || '<span style="color:var(--warn)">—</span>'],
+      ['RUT',         p.rut     || '<span style="color:var(--warn)">—</span>'],
+      p.cta        ? ['Cuenta',      p.cta]       : null,
+      p.fondo      ? ['Fondo',       p.fondo]     : ['Fondo', '<span style="color:var(--warn)">⚠ sin especificar</span>'],
+      p.serie      ? ['Serie',       p.serie]     : null,
+      p.monto      ? ['Monto',       '<strong>$'+Number(p.monto).toLocaleString('es-CL')+'</strong>'] : ['Monto','<span style="color:var(--warn)">⚠ sin especificar</span>'],
+      p.corredora  ? ['Corredora',   p.corredora] : null,
+      p.formaPago  ? ['Forma pago',  p.formaPago] : null,
+      ['Ejecuta',      CURRENT_USER?.nombre||'—'],
     ].filter(Boolean);
 
   } else if (p.type === 'saldo') {
@@ -2666,7 +2796,22 @@ async function confirmarPendingOrder() {
     };
     const {data,error} = await SB.from('aportes').insert(row).select().single();
     if (error) { botMsg(`❌ Error: ${error.message}`); return; }
-    botMsg(`✅ ${p.instruccion} guardada`);
+
+    // Enviar email a corredora si está configurada
+    let emailMsgA = '';
+    const corrEmailA = corredorasConfig[(p.corredora||'').toUpperCase()];
+    if (corrEmailA && outlookAccount) {
+      const rA = await enviarEmailOutlook(data,'aporte').catch(e=>({ok:false,msg:e.message}));
+      if (rA.ok) {
+        await SB.from('aportes').update({email_enviado:true}).eq('id',data.id);
+        emailMsgA = ` · ✉ email enviado a ${p.corredora}`;
+      } else {
+        emailMsgA = ` · email falló: ${rA.msg}`;
+      }
+    } else if (corrEmailA && !outlookAccount) {
+      emailMsgA = ' · (conectá Outlook para enviar email)';
+    }
+    botMsg(`✅ ${p.instruccion} guardada${emailMsgA}`);
     if (isActive('aportes')) await cargarAportes();
 
   } else if (p.type === 'saldo') {
