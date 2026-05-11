@@ -659,15 +659,54 @@ tr:hover td{background:var(--surface2)}
     
     <!-- Reset password form -->
     <div id="reset-form" class="login-body" style="display:none">
-      <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">
-        Ingresá tu email y te enviamos un link para restablecer tu contraseña.
+
+      <!-- Step 1: Email -->
+      <div id="reset-step-1">
+        <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">
+          Ingresá tu email y te enviamos un código de 6 dígitos.
+        </div>
+        <div class="lf">
+          <label>Email</label>
+          <input id="reset-email" type="email" placeholder="banquero@empresa.cl"
+            onkeydown="if(event.key==='Enter')enviarCodigoOTP()">
+        </div>
+        <button class="btn-login" onclick="enviarCodigoOTP()">Enviar código</button>
       </div>
-      <div class="lf">
-        <label>Email</label>
-        <input id="reset-email" type="email" placeholder="banquero@empresa.cl"
-          onkeydown="if(event.key==='Enter')resetPassword()">
+
+      <!-- Step 2: OTP code -->
+      <div id="reset-step-2" style="display:none">
+        <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">
+          Ingresá el código de 6 dígitos que enviamos a <strong id="reset-email-label"></strong>
+        </div>
+        <div class="lf">
+          <label>Código</label>
+          <input id="reset-otp" type="text" maxlength="6" placeholder="000000"
+            style="letter-spacing:.3em;font-size:20px;text-align:center;font-family:var(--mono)"
+            onkeydown="if(event.key==='Enter')verificarOTP()"
+            oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+        </div>
+        <button class="btn-login" onclick="verificarOTP()">Verificar código</button>
+        <div style="text-align:center;margin-top:8px">
+          <a onclick="enviarCodigoOTP()" style="font-size:11px;color:var(--text2);cursor:pointer">Reenviar código</a>
+        </div>
       </div>
-      <button class="btn-login" onclick="resetPassword()">Enviar link</button>
+
+      <!-- Step 3: New password -->
+      <div id="reset-step-3" style="display:none">
+        <div style="font-size:12px;color:var(--compra);margin-bottom:12px">✓ Código verificado. Ingresá tu nueva contraseña.</div>
+        <div class="lf">
+          <label>Nueva contraseña</label>
+          <input id="reset-pass1" type="password" placeholder="Mínimo 6 caracteres"
+            onkeydown="if(event.key==='Enter')document.getElementById('reset-pass2').focus()">
+        </div>
+        <div class="lf">
+          <label>Confirmar contraseña</label>
+          <input id="reset-pass2" type="password" placeholder="Repetí la contraseña"
+            onkeydown="if(event.key==='Enter')guardarNuevaClave()">
+        </div>
+        <button class="btn-login" onclick="guardarNuevaClave()">Guardar contraseña</button>
+      </div>
+
       <div class="login-err" id="reset-msg"></div>
     </div>
 
@@ -1453,32 +1492,102 @@ let resetMode = false;
 function toggleReset() {
   resetMode = !resetMode;
   registerMode = false;
-  document.getElementById('login-form').style.display   = resetMode ? 'none' : 'block';
+  document.getElementById('login-form').style.display    = resetMode ? 'none' : 'block';
   document.getElementById('register-form').style.display = 'none';
-  document.getElementById('reset-form').style.display   = resetMode ? 'block' : 'none';
+  document.getElementById('reset-form').style.display    = resetMode ? 'block' : 'none';
   document.getElementById('toggle-reset-link').textContent = resetMode ? 'Volver al login' : 'Olvidé mi clave';
   document.getElementById('toggle-reg-label').textContent  = resetMode ? '' : '¿Nuevo banquero? ';
   document.getElementById('toggle-reg-link').textContent   = resetMode ? '' : 'Crear cuenta';
   document.getElementById('reset-msg').textContent = '';
+  // Always start from step 1
+  if (resetMode) {
+    document.getElementById('reset-step-1').style.display = 'block';
+    document.getElementById('reset-step-2').style.display = 'none';
+    document.getElementById('reset-step-3').style.display = 'none';
+    document.getElementById('reset-email').value = '';
+  }
 }
 
-async function resetPassword() {
+// ── OTP Reset flow ──────────────────────────────────────────
+async function enviarCodigoOTP() {
   const email = document.getElementById('reset-email').value.trim();
   const msgEl = document.getElementById('reset-msg');
-  if (!email) { msgEl.textContent = 'Ingresá tu email'; return; }
+  if (!email) { msgEl.style.color='var(--venta)'; msgEl.textContent='Ingresá tu email'; return; }
 
-  // redirectTo must match exactly what's in Supabase URL Configuration
-  const redirectTo = 'https://mariomezaqq.github.io/Blotter-Mesa/';
+  msgEl.style.color='var(--text2)'; msgEl.textContent='Enviando...';
 
-  const { error } = await SB.auth.resetPasswordForEmail(email, { redirectTo });
+  const { error } = await SB.auth.signInWithOtp({
+    email,
+    options: { shouldCreateUser: false }  // only existing users
+  });
+
   if (error) {
-    msgEl.style.color = 'var(--venta)';
-    msgEl.textContent = error.message;
-  } else {
-    msgEl.style.color = 'var(--compra)';
-    msgEl.textContent = '✓ Link enviado. Revisá tu email.';
-    setTimeout(() => toggleReset(), 3000);
+    msgEl.style.color='var(--venta)';
+    msgEl.textContent = error.message.includes('User not found')
+      ? 'Email no registrado en el sistema'
+      : error.message;
+    return;
   }
+
+  // Show step 2
+  document.getElementById('reset-step-1').style.display = 'none';
+  document.getElementById('reset-step-2').style.display = 'block';
+  document.getElementById('reset-email-label').textContent = email;
+  document.getElementById('reset-otp').value = '';
+  document.getElementById('reset-otp').focus();
+  msgEl.style.color='var(--compra)'; msgEl.textContent='✓ Código enviado';
+  setTimeout(() => { msgEl.textContent=''; }, 3000);
+}
+
+async function verificarOTP() {
+  const email = document.getElementById('reset-email').value.trim();
+  const token = document.getElementById('reset-otp').value.trim();
+  const msgEl = document.getElementById('reset-msg');
+
+  if (token.length !== 6) { msgEl.style.color='var(--venta)'; msgEl.textContent='El código tiene 6 dígitos'; return; }
+
+  msgEl.style.color='var(--text2)'; msgEl.textContent='Verificando...';
+
+  const { error } = await SB.auth.verifyOtp({ email, token, type: 'magiclink' });
+
+  if (error) {
+    msgEl.style.color='var(--venta)';
+    msgEl.textContent = 'Código incorrecto o expirado. Solicitá uno nuevo.';
+    return;
+  }
+
+  // Code verified — show step 3
+  document.getElementById('reset-step-2').style.display = 'none';
+  document.getElementById('reset-step-3').style.display = 'block';
+  document.getElementById('reset-pass1').focus();
+  msgEl.textContent = '';
+}
+
+async function guardarNuevaClave() {
+  const pass1 = document.getElementById('reset-pass1').value;
+  const pass2 = document.getElementById('reset-pass2').value;
+  const msgEl = document.getElementById('reset-msg');
+
+  if (pass1.length < 6) { msgEl.style.color='var(--venta)'; msgEl.textContent='Mínimo 6 caracteres'; return; }
+  if (pass1 !== pass2)  { msgEl.style.color='var(--venta)'; msgEl.textContent='Las contraseñas no coinciden'; return; }
+
+  const { error } = await SB.auth.updateUser({ password: pass1 });
+
+  if (error) { msgEl.style.color='var(--venta)'; msgEl.textContent=error.message; return; }
+
+  msgEl.style.color='var(--compra)';
+  msgEl.textContent='✓ Contraseña actualizada. Ingresá con tu nueva clave.';
+
+  // Sign out and go back to login
+  setTimeout(async () => {
+    await SB.auth.signOut();
+    toggleReset(); // back to login
+    // Reset all steps
+    document.getElementById('reset-step-1').style.display = 'block';
+    document.getElementById('reset-step-2').style.display = 'none';
+    document.getElementById('reset-step-3').style.display = 'none';
+    document.getElementById('reset-msg').textContent = '';
+  }, 2000);
 }
 
 function toggleRegister() {
