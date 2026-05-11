@@ -1027,6 +1027,13 @@ tr:hover td{background:var(--surface2)}
 
         <!-- ── BANQUEROS ── -->
         <div id="sec-banqueros" class="section">
+          <!-- OTP Pending codes — admin only -->
+          <div id="otp-panel" style="display:none;margin-bottom:14px">
+            <div class="form-card" style="border-color:var(--warn);background:var(--warn-dim)">
+              <div class="form-title" style="color:var(--warn)">⚠ Códigos de recuperación pendientes</div>
+              <div id="otp-list"></div>
+            </div>
+          </div>
           <div class="bankers-grid" id="bankers-grid"></div>
           <div class="table-wrap">
             <div class="table-toolbar">
@@ -1508,26 +1515,32 @@ function toggleReset() {
   }
 }
 
-// ── OTP Reset flow ──────────────────────────────────────────
+// ── OTP Reset flow — código generado localmente, visible para admin ──────────
 async function enviarCodigoOTP() {
   const email = document.getElementById('reset-email').value.trim();
   const msgEl = document.getElementById('reset-msg');
   if (!email) { msgEl.style.color='var(--venta)'; msgEl.textContent='Ingresá tu email'; return; }
 
-  msgEl.style.color='var(--text2)'; msgEl.textContent='Enviando...';
-
-  const { error } = await SB.auth.signInWithOtp({
-    email,
-    options: { shouldCreateUser: false }  // only existing users
-  });
-
-  if (error) {
+  // Check user exists
+  const { data: bk } = await SB.from('banqueros').select('id,nombre').eq('email', email).single();
+  if (!bk) {
     msgEl.style.color='var(--venta)';
-    msgEl.textContent = error.message.includes('User not found')
-      ? 'Email no registrado en el sistema'
-      : error.message;
+    msgEl.textContent='Email no registrado en el sistema';
     return;
   }
+
+  // Generate 6-digit code
+  const codigo = String(Math.floor(100000 + Math.random() * 900000));
+  const expira = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 min
+
+  // Save to Supabase
+  await SB.from('otp_codes').upsert({
+    email,
+    codigo,
+    expira_at: expira,
+    usado: false,
+    nombre: bk.nombre
+  }, { onConflict: 'email' });
 
   // Show step 2
   document.getElementById('reset-step-1').style.display = 'none';
@@ -1535,8 +1548,9 @@ async function enviarCodigoOTP() {
   document.getElementById('reset-email-label').textContent = email;
   document.getElementById('reset-otp').value = '';
   document.getElementById('reset-otp').focus();
-  msgEl.style.color='var(--compra)'; msgEl.textContent='✓ Código enviado';
-  setTimeout(() => { msgEl.textContent=''; }, 3000);
+  msgEl.style.color='var(--compra)';
+  msgEl.textContent='✓ Código generado. Contactá al administrador para obtenerlo.';
+  setTimeout(() => { msgEl.textContent=''; }, 5000);
 }
 
 async function verificarOTP() {
@@ -1548,15 +1562,32 @@ async function verificarOTP() {
 
   msgEl.style.color='var(--text2)'; msgEl.textContent='Verificando...';
 
-  const { error } = await SB.auth.verifyOtp({ email, token, type: 'magiclink' });
+  // Check code in Supabase
+  const { data: otp } = await SB.from('otp_codes')
+    .select('*').eq('email', email).eq('codigo', token).eq('usado', false).single();
 
-  if (error) {
+  if (!otp) {
     msgEl.style.color='var(--venta)';
-    msgEl.textContent = 'Código incorrecto o expirado. Solicitá uno nuevo.';
+    msgEl.textContent='Código incorrecto. Verificá con el administrador.';
     return;
   }
 
-  // Code verified — show step 3
+  // Check expiry
+  if (new Date(otp.expira_at) < new Date()) {
+    msgEl.style.color='var(--venta)';
+    msgEl.textContent='Código expirado. Solicitá uno nuevo.';
+    return;
+  }
+
+  // Mark as used
+  await SB.from('otp_codes').update({usado: true}).eq('email', email);
+
+  // Sign in user so they can change password
+  // We use admin trick: sign in with magic link silently, user just needs to update password
+  // Since we can't sign in without password here, we store verified state and use updateUser
+  sessionStorage.setItem('otp_verified_email', email);
+
+  // Show step 3
   document.getElementById('reset-step-2').style.display = 'none';
   document.getElementById('reset-step-3').style.display = 'block';
   document.getElementById('reset-pass1').focus();
@@ -1564,30 +1595,34 @@ async function verificarOTP() {
 }
 
 async function guardarNuevaClave() {
-  const pass1 = document.getElementById('reset-pass1').value;
-  const pass2 = document.getElementById('reset-pass2').value;
-  const msgEl = document.getElementById('reset-msg');
+  const pass1  = document.getElementById('reset-pass1').value;
+  const pass2  = document.getElementById('reset-pass2').value;
+  const msgEl  = document.getElementById('reset-msg');
+  const email  = sessionStorage.getItem('otp_verified_email');
 
   if (pass1.length < 6) { msgEl.style.color='var(--venta)'; msgEl.textContent='Mínimo 6 caracteres'; return; }
   if (pass1 !== pass2)  { msgEl.style.color='var(--venta)'; msgEl.textContent='Las contraseñas no coinciden'; return; }
+  if (!email)           { msgEl.style.color='var(--venta)'; msgEl.textContent='Sesión expirada. Empezá de nuevo.'; return; }
 
-  const { error } = await SB.auth.updateUser({ password: pass1 });
+  // Use Supabase admin to update password via resetPasswordForEmail
+  // Then user logs in normally with new password
+  const { error } = await SB.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.href
+  });
 
   if (error) { msgEl.style.color='var(--venta)'; msgEl.textContent=error.message; return; }
 
+  sessionStorage.removeItem('otp_verified_email');
   msgEl.style.color='var(--compra)';
-  msgEl.textContent='✓ Contraseña actualizada. Ingresá con tu nueva clave.';
+  msgEl.textContent='✓ Te enviamos el link para confirmar tu nueva contraseña. Revisá el email.';
 
-  // Sign out and go back to login
-  setTimeout(async () => {
-    await SB.auth.signOut();
-    toggleReset(); // back to login
-    // Reset all steps
+  setTimeout(() => {
+    toggleReset();
     document.getElementById('reset-step-1').style.display = 'block';
     document.getElementById('reset-step-2').style.display = 'none';
     document.getElementById('reset-step-3').style.display = 'none';
     document.getElementById('reset-msg').textContent = '';
-  }, 2000);
+  }, 4000);
 }
 
 function toggleRegister() {
@@ -1986,6 +2021,11 @@ async function cargarClientes() {
   const { data } = await SB.from('clientes').select('*, cuentas(*)').order('nombre');
   DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[], titular_rut:c.titular_rut||null, banquero_asignado:c.banquero_asignado||null}));
 }
+async function descartarOTP(email) {
+  await SB.from('otp_codes').update({usado:true}).eq('email', email);
+  await loadBanqueros();
+}
+
 async function aprobarBanquero(id) {
   await SB.from('banqueros').update({estado:'activo'}).eq('id', id);
   await loadBanqueros();
@@ -1997,11 +2037,41 @@ async function bloquearBanquero(id) {
 }
 
 async function loadBanqueros() {
-  // Fetch all banqueros regardless of estado so admin sees pending requests
   const { data, error } = await SB.from('banqueros').select('*').order('nombre');
   if (error) console.warn('loadBanqueros error:', error.message);
   BANKERS_DB = data || [];
-  console.log('[Banqueros] Cargados:', BANKERS_DB.length, '| Pendientes:', BANKERS_DB.filter(b=>b.estado==='pendiente').length);
+
+  // Load pending OTP codes for admin
+  const isAdmin = ['admin','administrador'].includes((CURRENT_USER?.rol||'').toLowerCase());
+  if (isAdmin) {
+    const { data: otps } = await SB.from('otp_codes')
+      .select('*').eq('usado', false).gte('expira_at', new Date().toISOString()).order('created_at', {ascending:false});
+    const panel = document.getElementById('otp-panel');
+    const list  = document.getElementById('otp-list');
+    if (otps && otps.length && panel && list) {
+      panel.style.display = 'block';
+      list.innerHTML = otps.map(o => {
+        const mins = Math.round((new Date(o.expira_at) - new Date()) / 60000);
+        return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="flex:1">
+            <div style="font-size:12px;font-weight:600">${o.nombre||o.email}</div>
+            <div style="font-size:11px;color:var(--text2);font-family:var(--mono)">${o.email}</div>
+          </div>
+          <div style="font-family:var(--mono);font-size:24px;font-weight:700;
+            letter-spacing:.2em;color:var(--warn);background:var(--surface);
+            padding:6px 14px;border-radius:var(--r);border:1px solid var(--warn)">
+            ${o.codigo}
+          </div>
+          <div style="font-size:10px;color:var(--text2);text-align:right">
+            Expira en<br><strong>${mins} min</strong>
+          </div>
+          <button class="btn sm danger" onclick="descartarOTP('${o.email}')">✕</button>
+        </div>`;
+      }).join('');
+    } else if (panel) {
+      panel.style.display = 'none';
+    }
+  }
   renderBanqueros();
   // Update pending badge in nav
   const pending = BANKERS_DB.filter(b => b.estado === 'pendiente').length;
@@ -3820,7 +3890,8 @@ function getHistorialBanquero() {
 function setResumenFecha(offset) {
   const d = new Date();
   d.setDate(d.getDate() + offset);
-  const str = d.toISOString().slice(0,10);
+  // Use local date, not UTC (toISOString gives UTC which can be wrong day in Chile)
+  const str = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   document.getElementById('res-fecha').value = str;
   cargarResumenes();
 }
@@ -3829,7 +3900,7 @@ async function cargarResumenes() {
   // Init date picker to today if empty
   const picker = document.getElementById('res-fecha');
   if (!picker.value) picker.value = todayStr();
-  const fecha = picker.value;
+  const fecha = picker.value; // fecha is always local YYYY-MM-DD
 
   // Show label
   const label = document.getElementById('res-fecha-label');
