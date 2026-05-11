@@ -663,37 +663,21 @@ tr:hover td{background:var(--surface2)}
       <!-- Step 1: Email -->
       <div id="reset-step-1">
         <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">
-          Ingresá tu email y te enviamos un código de 6 dígitos.
+          Ingresá tu email y te enviamos un link para crear una nueva contraseña.
         </div>
         <div class="lf">
           <label>Email</label>
           <input id="reset-email" type="email" placeholder="banquero@empresa.cl"
-            onkeydown="if(event.key==='Enter')enviarCodigoOTP()">
+            onkeydown="if(event.key==='Enter')enviarResetEmail()">
         </div>
-        <button class="btn-login" onclick="enviarCodigoOTP()">Enviar código</button>
+        <button class="btn-login" onclick="enviarResetEmail()">Enviar link</button>
       </div>
 
-      <!-- Step 2: OTP code -->
-      <div id="reset-step-2" style="display:none">
-        <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">
-          Ingresá el código de 6 dígitos que enviamos a <strong id="reset-email-label"></strong>
-        </div>
-        <div class="lf">
-          <label>Código</label>
-          <input id="reset-otp" type="text" maxlength="6" placeholder="000000"
-            style="letter-spacing:.3em;font-size:20px;text-align:center;font-family:var(--mono)"
-            onkeydown="if(event.key==='Enter')verificarOTP()"
-            oninput="this.value=this.value.replace(/[^0-9]/g,'')">
-        </div>
-        <button class="btn-login" onclick="verificarOTP()">Verificar código</button>
-        <div style="text-align:center;margin-top:8px">
-          <a onclick="enviarCodigoOTP()" style="font-size:11px;color:var(--text2);cursor:pointer">Reenviar código</a>
-        </div>
-      </div>
-
-      <!-- Step 3: New password -->
+      <!-- Step 2: New password (shown after clicking link in email) -->
       <div id="reset-step-3" style="display:none">
-        <div style="font-size:12px;color:var(--compra);margin-bottom:12px">✓ Código verificado. Ingresá tu nueva contraseña.</div>
+        <div style="font-size:12px;color:var(--compra);margin-bottom:12px">
+          ✓ Link verificado. Ingresá tu nueva contraseña.
+        </div>
         <div class="lf">
           <label>Nueva contraseña</label>
           <input id="reset-pass1" type="password" placeholder="Mínimo 6 caracteres"
@@ -1509,120 +1493,61 @@ function toggleReset() {
   // Always start from step 1
   if (resetMode) {
     document.getElementById('reset-step-1').style.display = 'block';
-    document.getElementById('reset-step-2').style.display = 'none';
     document.getElementById('reset-step-3').style.display = 'none';
     document.getElementById('reset-email').value = '';
+    document.getElementById('reset-msg').textContent = '';
   }
 }
 
-// ── OTP Reset flow — código generado localmente, visible para admin ──────────
-async function enviarCodigoOTP() {
+// ── Reset password via magic link + PKCE ─────────────────────────────────────
+async function enviarResetEmail() {
   const email = document.getElementById('reset-email').value.trim();
   const msgEl = document.getElementById('reset-msg');
   if (!email) { msgEl.style.color='var(--venta)'; msgEl.textContent='Ingresá tu email'; return; }
 
-  // Check user exists
-  const { data: bk } = await SB.from('banqueros').select('id,nombre').eq('email', email).single();
-  if (!bk) {
+  msgEl.style.color='var(--text2)'; msgEl.textContent='Enviando...';
+
+  const { error } = await SB.auth.resetPasswordForEmail(email, {
+    redirectTo: 'https://mariomezaqq.github.io/Blotter-Mesa/'
+  });
+
+  if (error) {
     msgEl.style.color='var(--venta)';
-    msgEl.textContent='Email no registrado en el sistema';
+    msgEl.textContent = error.message;
     return;
   }
 
-  // Generate 6-digit code
-  const codigo = String(Math.floor(100000 + Math.random() * 900000));
-  const expira = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 min
-
-  // Save to Supabase
-  await SB.from('otp_codes').upsert({
-    email,
-    codigo,
-    expira_at: expira,
-    usado: false,
-    nombre: bk.nombre
-  }, { onConflict: 'email' });
-
-  // Show step 2
-  document.getElementById('reset-step-1').style.display = 'none';
-  document.getElementById('reset-step-2').style.display = 'block';
-  document.getElementById('reset-email-label').textContent = email;
-  document.getElementById('reset-otp').value = '';
-  document.getElementById('reset-otp').focus();
   msgEl.style.color='var(--compra)';
-  msgEl.textContent='✓ Código generado. Contactá al administrador para obtenerlo.';
-  setTimeout(() => { msgEl.textContent=''; }, 5000);
-}
-
-async function verificarOTP() {
-  const email = document.getElementById('reset-email').value.trim();
-  const token = document.getElementById('reset-otp').value.trim();
-  const msgEl = document.getElementById('reset-msg');
-
-  if (token.length !== 6) { msgEl.style.color='var(--venta)'; msgEl.textContent='El código tiene 6 dígitos'; return; }
-
-  msgEl.style.color='var(--text2)'; msgEl.textContent='Verificando...';
-
-  // Check code in Supabase
-  const { data: otp } = await SB.from('otp_codes')
-    .select('*').eq('email', email).eq('codigo', token).eq('usado', false).single();
-
-  if (!otp) {
-    msgEl.style.color='var(--venta)';
-    msgEl.textContent='Código incorrecto. Verificá con el administrador.';
-    return;
-  }
-
-  // Check expiry
-  if (new Date(otp.expira_at) < new Date()) {
-    msgEl.style.color='var(--venta)';
-    msgEl.textContent='Código expirado. Solicitá uno nuevo.';
-    return;
-  }
-
-  // Mark as used
-  await SB.from('otp_codes').update({usado: true}).eq('email', email);
-
-  // Sign in user so they can change password
-  // We use admin trick: sign in with magic link silently, user just needs to update password
-  // Since we can't sign in without password here, we store verified state and use updateUser
-  sessionStorage.setItem('otp_verified_email', email);
-
-  // Show step 3
-  document.getElementById('reset-step-2').style.display = 'none';
-  document.getElementById('reset-step-3').style.display = 'block';
-  document.getElementById('reset-pass1').focus();
-  msgEl.textContent = '';
+  msgEl.textContent='✓ Link enviado. Revisá tu email y hacé click en el botón.';
 }
 
 async function guardarNuevaClave() {
-  const pass1  = document.getElementById('reset-pass1').value;
-  const pass2  = document.getElementById('reset-pass2').value;
-  const msgEl  = document.getElementById('reset-msg');
-  const email  = sessionStorage.getItem('otp_verified_email');
+  const pass1 = document.getElementById('reset-pass1').value;
+  const pass2 = document.getElementById('reset-pass2').value;
+  const msgEl = document.getElementById('reset-msg');
 
   if (pass1.length < 6) { msgEl.style.color='var(--venta)'; msgEl.textContent='Mínimo 6 caracteres'; return; }
   if (pass1 !== pass2)  { msgEl.style.color='var(--venta)'; msgEl.textContent='Las contraseñas no coinciden'; return; }
-  if (!email)           { msgEl.style.color='var(--venta)'; msgEl.textContent='Sesión expirada. Empezá de nuevo.'; return; }
 
-  // Use Supabase admin to update password via resetPasswordForEmail
-  // Then user logs in normally with new password
-  const { error } = await SB.auth.resetPasswordForEmail(email, {
-    redirectTo: window.location.href
-  });
-
+  const { error } = await SB.auth.updateUser({ password: pass1 });
   if (error) { msgEl.style.color='var(--venta)'; msgEl.textContent=error.message; return; }
 
-  sessionStorage.removeItem('otp_verified_email');
   msgEl.style.color='var(--compra)';
-  msgEl.textContent='✓ Te enviamos el link para confirmar tu nueva contraseña. Revisá el email.';
+  msgEl.textContent='✓ Contraseña actualizada. Ingresá con tu nueva clave.';
 
-  setTimeout(() => {
-    toggleReset();
-    document.getElementById('reset-step-1').style.display = 'block';
-    document.getElementById('reset-step-2').style.display = 'none';
-    document.getElementById('reset-step-3').style.display = 'none';
-    document.getElementById('reset-msg').textContent = '';
-  }, 4000);
+  setTimeout(async () => {
+    await SB.auth.signOut();
+    // Hide reset form, show login
+    document.getElementById('reset-form').style.display='none';
+    document.getElementById('login-form').style.display='block';
+    document.getElementById('reset-step-1').style.display='block';
+    document.getElementById('reset-step-3').style.display='none';
+    document.getElementById('reset-msg').textContent='';
+    resetMode = false;
+    document.getElementById('toggle-reset-link').textContent='Olvidé mi clave';
+    document.getElementById('toggle-reg-label').textContent='¿Nuevo banquero? ';
+    document.getElementById('toggle-reg-link').textContent='Crear cuenta';
+  }, 2000);
 }
 
 function toggleRegister() {
@@ -1742,12 +1667,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Listen for auth state changes — this catches recovery tokens reliably
   // even when GitHub Pages drops or rewrites the URL hash
   SB.auth.onAuthStateChange(async (event, session) => {
-    // Solo manejamos PASSWORD_RECOVERY — el login normal lo maneja loginUser directamente
     if (event === 'PASSWORD_RECOVERY') {
-      document.getElementById('login-screen').style.display = 'flex';
+      // Show login screen with reset form in step 3 (new password)
       document.getElementById('app').style.display = 'none';
-      showChangePasswordModal();
-      return;
+      document.getElementById('login-screen').style.display = 'flex';
+      // Show reset form at step 3
+      document.getElementById('login-form').style.display = 'none';
+      document.getElementById('register-form').style.display = 'none';
+      document.getElementById('reset-form').style.display = 'block';
+      document.getElementById('reset-step-1').style.display = 'none';
+      document.getElementById('reset-step-3').style.display = 'block';
+      document.getElementById('reset-pass1').focus();
+      document.getElementById('reset-msg').style.color = 'var(--compra)';
+      document.getElementById('reset-msg').textContent = '✓ Link verificado. Ingresá tu nueva contraseña.';
+      resetMode = true;
+      document.getElementById('toggle-reset-link').textContent = 'Volver al login';
+      document.getElementById('toggle-reg-label').textContent = '';
+      document.getElementById('toggle-reg-link').textContent = '';
     }
   });
 
