@@ -3035,7 +3035,21 @@ function extractNemoFromText(text) {
 // PROCESS COMMAND
 // ═══════════════════════════════════════════════════════════
 function processCommand(text) {
-  // Normalize "del X" → "de X", "al X" → "a X" to avoid preposition confusion
+  // Normalize informal verbs → standard form
+  text = text
+    .replace(/\bcomprale\b/gi, 'compra')
+    .replace(/\bcómprale\b/gi, 'compra')
+    .replace(/\bcomprémosle\b/gi, 'compra')
+    .replace(/\bcompremosle\b/gi, 'compra')
+    .replace(/\bcompremos\b/gi, 'compra')
+    .replace(/\bvendele\b/gi, 'venta')
+    .replace(/\bvéndale\b/gi, 'venta')
+    .replace(/\bvendale\b/gi, 'venta')
+    .replace(/\bvendémosle\b/gi, 'venta')
+    .replace(/\bvendemos\b/gi, 'venta')
+    .replace(/\baportale\b/gi, 'aporte')
+    .replace(/\brescatale\b/gi, 'rescate');
+  // Normalize "del X" → "de X", "al X" → "a X"
   text = text.replace(/\bdel\s+/gi, 'de ').replace(/\bal\s+/gi, 'a ');
   if (/\b(SALDO|BALANCE|DISPONIBLE)\b/i.test(text)) { parseSaldo(text); return; }
   if (/\b(APORTE|APORTAR|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
@@ -3204,6 +3218,13 @@ function checkMissingAndConfirm(parsed) {
       botMsg(`¿Cuál es el número de cuenta de <strong>${parsed.cliente||'el cliente'}</strong>?`);
       return;
     }
+  }
+
+  // Corredora obligatoria para órdenes
+  if (parsed.type === 'orden' && !parsed.corredora) {
+    chatContext = {state:'await_missing_field', field:'corredora', parsed};
+    botMsg('¿Por qué corredora va la orden? (ej: <em>MBI</em>, <em>LV</em>, <em>BTG</em>)');
+    return;
   }
 
   // Condición obligatoria para órdenes
@@ -3465,7 +3486,8 @@ function handleMissingField(text) {
     case 'nemo':    parsed.nemo     = text.trim().toUpperCase(); parsed.nemoResult={resolved:parsed.nemo,exact:true}; break;
     case 'precio':    parsed.precio    = parseMontoNatural(text); break;
     case 'cantidad':  parsed.cantidad  = parseMontoNatural(text); break;
-    case 'cta':       parsed.cta = text.trim(); break;
+    case 'cta':       parsed.cta      = text.trim(); break;
+    case 'corredora': parsed.corredora = text.trim().toUpperCase(); break;
     case 'condicion': {
       const up = text.trim().toUpperCase();
       if (['PH','PM','CN'].includes(up)) parsed.condicion = up;
@@ -3732,6 +3754,7 @@ async function confirmarPendingOrder() {
     if (!p.rut)       missing.push('RUT');
     if (!p.cliente)   missing.push('nombre del cliente');
     if (!p.cta)       missing.push('cuenta');
+    if (!p.corredora) missing.push('corredora');
     if (!p.condicion) missing.push('condición (PH, PM o CN)');
     if (missing.length) {
       // Re-enter validation flow instead of saving
