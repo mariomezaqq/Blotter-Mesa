@@ -947,9 +947,41 @@ tr:hover td{background:var(--surface2)}
 
         <!-- ── CLIENTES ── -->
         <div id="sec-clientes" class="section">
-          <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
+          <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
             <input class="table-search" style="max-width:200px" placeholder="Buscar cliente..." id="cli-search" oninput="renderClientes()">
             <button class="btn ok" onclick="abrirModal()">+ Nuevo cliente</button>
+            <button class="btn" onclick="abrirCargaMasiva()" style="border-color:var(--info);color:var(--info)">↑ Carga masiva</button>
+            <a id="download-template" style="display:none"></a>
+          </div>
+          <!-- CARGA MASIVA PANEL -->
+          <div id="carga-masiva-panel" style="display:none;margin-bottom:14px">
+            <div class="form-card">
+              <div class="form-title">Carga masiva de clientes · Excel / CSV</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px">
+                <div>
+                  <div style="font-size:11px;color:var(--text2);margin-bottom:8px;line-height:1.6">
+                    Subí un archivo Excel o CSV con las columnas:<br>
+                    <span style="font-family:var(--mono);color:var(--accent)">tipo · nombre · rut · agente · nombre_sociedad · rut_sociedad · cta · corredora · fondo_mutuo</span><br>
+                    <span style="font-size:10px;color:var(--text3)">Las columnas de sociedad y cuenta son opcionales. Podés tener múltiples filas por cliente (una por cuenta).</span>
+                  </div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn sm ok" onclick="descargarTemplate()">↓ Descargar template</button>
+                    <label class="btn sm" style="cursor:pointer;border-color:var(--info);color:var(--info)">
+                      ↑ Seleccionar archivo
+                      <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="procesarArchivoCarga(this)">
+                    </label>
+                  </div>
+                </div>
+                <div id="carga-preview" style="max-height:200px;overflow-y:auto;font-size:11px;font-family:var(--mono);color:var(--text2)">
+                  Sin archivo seleccionado
+                </div>
+              </div>
+              <div class="form-actions">
+                <button class="btn primary" id="btn-importar" onclick="importarClientes()" disabled>Importar clientes</button>
+                <button class="btn" onclick="cerrarCargaMasiva()">Cancelar</button>
+                <span class="status-msg" id="carga-msg"></span>
+              </div>
+            </div>
           </div>
           <div class="db-grid" id="clientes-grid"></div>
         </div>
@@ -1185,7 +1217,11 @@ tr:hover td{background:var(--surface2)}
         <div class="field f3"><label>Agente</label><input id="m-agente" type="text" placeholder="981"></div>
       </div>
       <div class="divider"></div>
-      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text2);margin-bottom:8px;font-family:var(--mono)">Cuentas asociadas</div>
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text2);margin-bottom:8px;font-family:var(--mono)">Sociedades vinculadas</div>
+      <div id="m-sociedades"></div>
+      <button class="btn sm" style="margin-top:4px" onclick="addSociedadRow()">+ Agregar sociedad</button>
+      <div class="divider"></div>
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text2);margin-bottom:8px;font-family:var(--mono)">Cuentas propias</div>
       <div id="m-cuentas"></div>
       <button class="btn sm" style="margin-top:6px" onclick="addCuentaRow()">+ Agregar cuenta</button>
     </div>
@@ -1756,7 +1792,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
 // ═══════════════════════════════════════════════════════════
 async function cargarClientes() {
   const { data } = await SB.from('clientes').select('*, cuentas(*)').order('nombre');
-  DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[]}));
+  DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[], titular_rut:c.titular_rut||null}));
 }
 async function aprobarBanquero(id) {
   await SB.from('banqueros').update({estado:'activo'}).eq('id', id);
@@ -1871,11 +1907,17 @@ function acBuscar(inputId, dropId, ctx) {
   ).slice(0,12);
   acRes[dropId]=res;
   if(!res.length){drop.style.display='none';return;}
-  drop.innerHTML=res.map((c,i)=>`
-    <div class="ac-item" onmousedown="acSelect(${i},'${dropId}','${ctx}')">
-      <div class="ac-name">${c.nombre}${c.tipo==='institucional'?'<span class="ac-badge">Inst.</span>':''}</div>
-      <div class="ac-meta">${c.rut} · ${c.cuentas.map(cu=>`Cta.${cu.cta} ${cu.corredora}`).join(' | ')}</div>
-    </div>`).join('');
+  drop.innerHTML=res.map((c,i)=>{
+    const socs = DB_CLIENTES.filter(s => s.titular_rut === c.rut);
+    const allCuentas = [
+      ...c.cuentas.map(cu=>`Cta.${cu.cta}${cu.corredora?' '+cu.corredora:''}`),
+      ...socs.flatMap(s => s.cuentas.map(cu=>`🏢Cta.${cu.cta}${cu.corredora?' '+cu.corredora:''}`))
+    ];
+    const socLabel = socs.length ? ` · ${socs.length} sociedad${socs.length>1?'es':''}` : '';
+    return `<div class="ac-item" onmousedown="acSelect(${i},'${dropId}','${ctx}')">
+      <div class="ac-name">${c.nombre}${c.tipo==='institucional'?'<span class="ac-badge">Inst.</span>':''}${c.titular_rut?'<span class="ac-badge" style="background:var(--info-dim);color:var(--info)">Sociedad</span>':''}</div>
+      <div class="ac-meta">${c.rut}${socLabel} · ${allCuentas.join(' | ')||'sin cuentas'}</div>
+    </div>`;}).join('');
   drop.style.display='block';
 }
 function acKey(e,dropId,ctx) {
@@ -1896,18 +1938,69 @@ function acSelect(i, dropId, ctx) {
   if(pi) renderCtaPills(c,pi,ctx);
   document.getElementById(dropId).style.display='none';
 }
+
+// When a cuenta pill is selected, check if it belongs to a sociedad
+function resolveNombreParaCuenta(cliente, cta) {
+  // Find if this cuenta belongs to a sociedad linked to this client
+  const titular = DB_CLIENTES.find(c => c.rut === cliente.rut);
+  if (!titular) return {nombre: cliente.nombre, rut: cliente.rut};
+
+  // Find sociedades of this titular
+  const sociedades = DB_CLIENTES.filter(s => s.titular_rut === titular.rut);
+  for (const soc of sociedades) {
+    if (soc.cuentas.some(cu => cu.cta === cta)) {
+      return {nombre: soc.nombre, rut: soc.rut, esSociedad: true, titular: titular.nombre};
+    }
+  }
+  return {nombre: cliente.nombre, rut: cliente.rut, esSociedad: false};
+}
 function renderCtaPills(cliente, pillsId, ctx) {
-  document.getElementById(pillsId).innerHTML = cliente.cuentas.map(cu=>`
-    <span class="cta-pill" onclick="selCta(this,'${cu.cta}','${cu.corredora}','${ctx}')">
+  // Own accounts
+  let pills = cliente.cuentas.map(cu => `
+    <span class="cta-pill" onclick="selCta(this,'${cu.cta}','${cu.corredora||''}','${ctx}','${cliente.rut}')">
       Cta.${cu.cta}${cu.corredora?' · '+cu.corredora:''}
     </span>`).join('');
+
+  // Sociedad accounts
+  const sociedades = DB_CLIENTES.filter(s => s.titular_rut === cliente.rut);
+  for (const soc of sociedades) {
+    for (const cu of soc.cuentas) {
+      pills += `<span class="cta-pill" style="border-color:var(--info-dim);color:var(--info)"
+        onclick="selCta(this,'${cu.cta}','${cu.corredora||''}','${ctx}','${cliente.rut}')"
+        title="Cuenta de ${soc.nombre}">
+        🏢 Cta.${cu.cta}${cu.corredora?' · '+cu.corredora:''}</span>`;
+    }
+  }
+
+  document.getElementById(pillsId).innerHTML = pills ||
+    '<span style="font-size:10px;color:var(--text3)">Sin cuentas</span>';
 }
-function selCta(el,cta,corr,ctx) {
+function selCta(el, cta, corr, ctx, clienteRut) {
   document.querySelectorAll(`#${ctx==='ordenes'?'f':'a'}-cta-pills .cta-pill`).forEach(p=>p.classList.remove('active'));
   el.classList.add('active');
-  if(ctx==='ordenes'){set('f-cta',cta,true);set('f-corredora',corr,true);}
-  else if(ctx==='aportes'){set('a-cta',cta,true);}
-  ctaSel[ctx]=cta;
+  ctaSel[ctx] = cta;
+
+  if (ctx === 'ordenes') {
+    set('f-cta', cta, true);
+    if (corr) set('f-corredora', corr, true);
+
+    // Resolve nombre/rut based on which entity owns this cuenta
+    if (clienteRut) {
+      const cliente = DB_CLIENTES.find(c => c.rut === clienteRut);
+      if (cliente) {
+        const resolved = resolveNombreParaCuenta(cliente, cta);
+        set('f-rut', resolved.rut, true);
+        set('f-cliente', resolved.nombre, true);
+        if (resolved.esSociedad) {
+          // Show indicator that this is a sociedad
+          const el2 = document.getElementById('f-cliente');
+          if (el2) el2.title = `Sociedad de ${resolved.titular}`;
+        }
+      }
+    }
+  } else if (ctx === 'aportes') {
+    set('a-cta', cta, true);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1992,8 +2085,16 @@ function renderClientes() {
       </div>
       <div class="db-cuentas">
         ${c.cuentas.map(cu=>`<span class="db-cuenta-tag">Cta.${cu.cta}${cu.corredora?' · '+cu.corredora:''}${cu.fondo_mutuo?' · '+cu.fondo_mutuo:''}</span>`).join('')}
-        ${!c.cuentas.length?'<span style="font-size:10px;color:var(--text3)">Sin cuentas</span>':''}
+        ${!c.cuentas.length && !DB_CLIENTES.filter(s=>s.titular_rut===c.rut).length ?'<span style="font-size:10px;color:var(--text3)">Sin cuentas</span>':''}
       </div>
+      ${DB_CLIENTES.filter(s=>s.titular_rut===c.rut).map(soc=>`
+        <div style="margin-top:6px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r)">
+          <div style="font-size:10px;font-weight:600;color:var(--info);font-family:var(--mono);margin-bottom:4px">🏢 ${soc.nombre}</div>
+          <div style="font-size:10px;color:var(--text2);font-family:var(--mono);margin-bottom:4px">${soc.rut}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:3px">
+            ${soc.cuentas.map(cu=>`<span class="db-cuenta-tag" style="border-color:var(--info-dim);color:var(--info)">Cta.${cu.cta}${cu.corredora?' · '+cu.corredora:''}</span>`).join('')}
+          </div>
+        </div>`).join('')}
     </div></div>`).join('');
 }
 function renderBanqueros() {
@@ -2478,8 +2579,12 @@ function resolveCliente(text) {
   if (m) {
     const rut = m[1];
     const found = DB_CLIENTES.find(c => normalizeRut(c.rut) === normalizeRut(rut));
-    return found ? {cliente:found, rut:found.rut, nombre:found.nombre}
-                 : {rut, nombre:null, unknown:true};
+    if (found) {
+      // If it's a sociedad (has titular_rut), use sociedad name
+      return {cliente:found, rut:found.rut, nombre:found.nombre,
+              esSociedad:!!found.titular_rut, titular:found.titular_rut};
+    }
+    return {rut, nombre:null, unknown:true};
   }
 
   // 2. RUT without dash
@@ -2487,8 +2592,11 @@ function resolveCliente(text) {
   if (m) {
     const rut = formatRut(m[1]);
     const found = DB_CLIENTES.find(c => normalizeRut(c.rut) === normalizeRut(rut));
-    return found ? {cliente:found, rut:found.rut, nombre:found.nombre}
-                 : {rut, nombre:null, unknown:true};
+    if (found) {
+      return {cliente:found, rut:found.rut, nombre:found.nombre,
+              esSociedad:!!found.titular_rut, titular:found.titular_rut};
+    }
+    return {rut, nombre:null, unknown:true};
   }
 
   // 3. Name matching — first strip known nemos, aliases and brokers from text
@@ -2783,6 +2891,23 @@ function checkMissingAndConfirm(parsed) {
     return;
   }
 
+  // Cuenta obligatoria para órdenes
+  if (parsed.type === 'orden' && !parsed.cta) {
+    // Si el cliente tiene solo una cuenta, auto-fill
+    if (parsed.clienteResult?.cliente?.cuentas?.length === 1) {
+      parsed.cta = parsed.clienteResult.cliente.cuentas[0].cta;
+      if (!parsed.corredora && parsed.clienteResult.cliente.cuentas[0].corredora)
+        parsed.corredora = parsed.clienteResult.cliente.cuentas[0].corredora;
+    } else if (parsed.clienteResult?.cliente?.cuentas?.length > 1) {
+      // Múltiples cuentas → ya se pregunta en await_cuenta_select
+    } else {
+      // No tiene cuentas registradas o es cliente nuevo → preguntar
+      chatContext = {state:'await_missing_field', field:'cta', parsed};
+      botMsg(`¿Cuál es el número de cuenta de <strong>${parsed.cliente||'el cliente'}</strong>?`);
+      return;
+    }
+  }
+
   // Condición obligatoria para órdenes
   if (parsed.type === 'orden' && !parsed.condicion) {
     chatContext = {state:'await_missing_field', field:'condicion', parsed};
@@ -2990,6 +3115,7 @@ function handleMissingField(text) {
     case 'nemo':    parsed.nemo     = text.trim().toUpperCase(); parsed.nemoResult={resolved:parsed.nemo,exact:true}; break;
     case 'precio':    parsed.precio    = parseMontoNatural(text); break;
     case 'cantidad':  parsed.cantidad  = parseMontoNatural(text); break;
+    case 'cta':       parsed.cta = text.trim(); break;
     case 'condicion': {
       const up = text.trim().toUpperCase();
       if (['PH','PM','CN'].includes(up)) parsed.condicion = up;
@@ -3156,7 +3282,9 @@ function showParsedConfirm(p) {
     rows = [
       ['Operación',  `<span style="${colorStyle};font-weight:700">${p.op}</span>`],
       ['Nemo',        nemoLabel],
-      ['Cliente',     p.cliente || '<span style="color:var(--warn)">—</span>'],
+      ['Cliente',     (p.clienteResult?.esSociedad
+        ? `${p.cliente} <span style="font-size:10px;color:var(--info)">(sociedad)</span>`
+        : p.cliente) || '<span style="color:var(--warn)">—</span>'],
       ['RUT',         p.rut     || '<span style="color:var(--warn)">—</span>'],
       p.cta       ? ['Cuenta',    p.cta]         : null,
       p.corredora ? ['Corredora', p.corredora]   : null,
@@ -3174,7 +3302,9 @@ function showParsedConfirm(p) {
     colorStyle = 'color:var(--info)';
     rows = [
       ['Instrucción', `<span style="${colorStyle};font-weight:700">${p.instruccion}</span>`],
-      ['Cliente',     p.cliente || '<span style="color:var(--warn)">—</span>'],
+      ['Cliente',     (p.clienteResult?.esSociedad
+        ? `${p.cliente} <span style="font-size:10px;color:var(--info)">(sociedad)</span>`
+        : p.cliente) || '<span style="color:var(--warn)">—</span>'],
       ['RUT',         p.rut     || '<span style="color:var(--warn)">—</span>'],
       p.cta        ? ['Cuenta',      p.cta]       : null,
       p.fondo      ? ['Fondo',       p.fondo]     : ['Fondo', '<span style="color:var(--warn)">⚠ sin especificar</span>'],
@@ -3246,6 +3376,7 @@ async function confirmarPendingOrder() {
     if (!p.nemo)      missing.push('nemo');
     if (!p.rut)       missing.push('RUT');
     if (!p.cliente)   missing.push('nombre del cliente');
+    if (!p.cta)       missing.push('cuenta');
     if (!p.condicion) missing.push('condición (PH, PM o CN)');
     if (missing.length) {
       // Re-enter validation flow instead of saving
@@ -3608,6 +3739,246 @@ function renderFondosFrecuentes() {
 // ─────────────────────────────────────────────────────────
 
 // ═══════════════════════════════════════════════════════════
+// SOCIEDADES — modal helpers
+// ═══════════════════════════════════════════════════════════
+let sociedadesModal = [];
+
+function addSociedadRow() {
+  sociedadesModal.push({nombre:'', rut_sociedad:'', cuentas:[]});
+  renderSociedadesModal();
+}
+
+function renderSociedadesModal() {
+  document.getElementById('m-sociedades').innerHTML = sociedadesModal.map((s,i) => `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:6px">
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input value="${s.nombre}" placeholder="Nombre sociedad (ej: INVERSIONES JP SpA)"
+          style="flex:1;font-size:11px;padding:5px 8px;background:var(--surface3);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none"
+          oninput="sociedadesModal[${i}].nombre=this.value.toUpperCase()">
+        <input value="${s.rut_sociedad}" placeholder="RUT sociedad"
+          style="width:120px;font-size:11px;padding:5px 8px;background:var(--surface3);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none;font-family:var(--mono)"
+          oninput="sociedadesModal[${i}].rut_sociedad=this.value">
+        <button class="btn sm danger" onclick="sociedadesModal.splice(${i},1);renderSociedadesModal()">✕</button>
+      </div>
+      <div style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text2);font-family:var(--mono);margin-bottom:4px">Cuentas de la sociedad</div>
+      ${(s.cuentas||[]).map((cu,j) => `
+        <div style="display:flex;gap:6px;margin-bottom:4px">
+          <input value="${cu.cta||''}" placeholder="Cta."
+            style="width:70px;font-size:11px;padding:3px 7px;border:1px solid var(--border2);border-radius:var(--r);background:var(--surface2);font-family:var(--mono);color:var(--text);outline:none"
+            oninput="sociedadesModal[${i}].cuentas[${j}].cta=this.value">
+          <input value="${cu.corredora||''}" placeholder="Corredora"
+            style="width:80px;font-size:11px;padding:3px 7px;border:1px solid var(--border2);border-radius:var(--r);background:var(--surface2);font-family:var(--mono);color:var(--text);outline:none"
+            oninput="sociedadesModal[${i}].cuentas[${j}].corredora=this.value">
+          <button class="btn sm danger" onclick="sociedadesModal[${i}].cuentas.splice(${j},1);renderSociedadesModal()">✕</button>
+        </div>`).join('')}
+      <button class="btn sm" onclick="sociedadesModal[${i}].cuentas.push({cta:'',corredora:''});renderSociedadesModal()" style="margin-top:2px">+ Cuenta</button>
+    </div>`).join('') || '<div style="font-size:11px;color:var(--text3)">Sin sociedades</div>';
+}
+
+// ═══════════════════════════════════════════════════════════
+// CARGA MASIVA
+// ═══════════════════════════════════════════════════════════
+let cargaData = []; // rows parsed from file
+
+function abrirCargaMasiva() {
+  document.getElementById('carga-masiva-panel').style.display = 'block';
+  document.getElementById('carga-masiva-panel').scrollIntoView({behavior:'smooth'});
+}
+function cerrarCargaMasiva() {
+  document.getElementById('carga-masiva-panel').style.display = 'none';
+  cargaData = [];
+  document.getElementById('carga-preview').textContent = 'Sin archivo seleccionado';
+  document.getElementById('btn-importar').disabled = true;
+}
+
+function descargarTemplate() {
+  const headers = ['tipo','nombre','rut','agente','nombre_sociedad','rut_sociedad','cta','corredora','fondo_mutuo'];
+  const examples = [
+    ['persona','JUAN PÉREZ','12345678-9','981','','','456','LV',''],
+    ['persona','JUAN PÉREZ','12345678-9','981','INVERSIONES JP SpA','76543210-1','789','MBI',''],
+    ['institucional','INVERSIONES XYZ SpA','76543210-1','','','','123','BTG','BICE LIQUIDEZ'],
+  ];
+  const csv = [headers.join(','), ...examples.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8;'}));
+  a.download = 'template_clientes.csv';
+  a.click();
+}
+
+function procesarArchivoCarga(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const preview = document.getElementById('carga-preview');
+  const btn = document.getElementById('btn-importar');
+
+  if (file.name.endsWith('.csv')) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const text = e.target.result;
+      parsearCSV(text);
+    };
+    reader.readAsText(file, 'UTF-8');
+  } else if (file.name.match(/\.xlsx?$/)) {
+    // Use SheetJS if available, otherwise ask for CSV
+    if (typeof XLSX !== 'undefined') {
+      const reader = new FileReader();
+      reader.onload = e => {
+        const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const csv = XLSX.utils.sheet_to_csv(ws);
+        parsearCSV(csv);
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      preview.innerHTML = '<span style="color:var(--warn)">Para Excel, primero guardá como CSV desde Excel (Archivo → Guardar como → CSV)</span>';
+    }
+  }
+}
+
+function parsearCSV(text) {
+  const preview = document.getElementById('carga-preview');
+  const btn = document.getElementById('btn-importar');
+  const lines = text.trim().split('\n').filter(l => l.trim());
+  if (!lines.length) { preview.textContent = 'Archivo vacío'; return; }
+
+  // Parse headers
+  const headers = lines[0].split(',').map(h => h.replace(/["\']/g,'').trim().toLowerCase());
+  const required = ['nombre','rut'];
+  const missing = required.filter(r => !headers.includes(r));
+  if (missing.length) {
+    preview.innerHTML = `<span style="color:var(--venta)">Faltan columnas: ${missing.join(', ')}</span>`;
+    return;
+  }
+
+  // Parse rows
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(',').map(v => v.replace(/^["']|["']$/g,'').trim());
+    const row = {};
+    headers.forEach((h,j) => row[h] = vals[j]||'');
+    if (row.nombre && row.rut) rows.push(row);
+  }
+
+  cargaData = rows;
+
+  // Show preview
+  const clienteCount = new Set(rows.map(r => r.rut)).size;
+  const cuentaCount  = rows.filter(r => r.cta).length;
+  const socCount     = rows.filter(r => r.rut_sociedad).length;
+
+  preview.innerHTML = `
+    <div style="color:var(--compra);font-weight:600;margin-bottom:6px">✓ ${rows.length} filas leídas</div>
+    <div>👤 ${clienteCount} clientes únicos</div>
+    <div>🏢 ${socCount} sociedades</div>
+    <div>📋 ${cuentaCount} cuentas</div>
+    <div style="margin-top:8px;max-height:100px;overflow-y:auto">
+      ${rows.slice(0,5).map(r => `<div style="color:var(--text2)">${r.nombre} · ${r.rut}${r.rut_sociedad?' → '+r.nombre_sociedad:''}${r.cta?' · Cta.'+r.cta:''}</div>`).join('')}
+      ${rows.length > 5 ? `<div style="color:var(--text3)">... y ${rows.length-5} más</div>` : ''}
+    </div>`;
+
+  btn.disabled = false;
+}
+
+async function importarClientes() {
+  if (!cargaData.length) return;
+  const btn = document.getElementById('btn-importar');
+  const msgEl = document.getElementById('carga-msg');
+  btn.disabled = true;
+  btn.textContent = 'Importando...';
+
+  let creados = 0, actualizados = 0, errores = 0;
+
+  // Group rows by RUT principal
+  const byRut = {};
+  for (const row of cargaData) {
+    const rut = row.rut.trim();
+    if (!byRut[rut]) byRut[rut] = {row, cuentas:[], sociedades:{}};
+    // Cuenta propia (sin sociedad)
+    if (row.cta && !row.rut_sociedad) {
+      byRut[rut].cuentas.push({cta:row.cta, corredora:row.corredora||'', fondo_mutuo:row.fondo_mutuo||''});
+    }
+    // Sociedad
+    if (row.rut_sociedad) {
+      const rutSoc = row.rut_sociedad.trim();
+      if (!byRut[rut].sociedades[rutSoc]) {
+        byRut[rut].sociedades[rutSoc] = {nombre:row.nombre_sociedad||'', rut_sociedad:rutSoc, cuentas:[]};
+      }
+      if (row.cta) {
+        byRut[rut].sociedades[rutSoc].cuentas.push({cta:row.cta, corredora:row.corredora||'', fondo_mutuo:row.fondo_mutuo||''});
+      }
+    }
+  }
+
+  for (const [rut, data] of Object.entries(byRut)) {
+    try {
+      const nombre = data.row.nombre.toUpperCase();
+      const tipo   = data.row.tipo || 'persona';
+      const agente = data.row.agente || null;
+
+      // Check if client exists
+      let clienteId;
+      const existing = DB_CLIENTES.find(c => c.rut === rut);
+
+      if (existing) {
+        clienteId = existing.id;
+        actualizados++;
+      } else {
+        const {data:newC, error} = await SB.from('clientes').insert({rut, nombre, tipo, agente}).select().single();
+        if (error) { errores++; continue; }
+        clienteId = newC.id;
+        creados++;
+      }
+
+      // Insert cuentas propias (avoid duplicates)
+      for (const cu of data.cuentas) {
+        const existCu = existing?.cuentas?.find(c => c.cta === cu.cta);
+        if (!existCu) {
+          await SB.from('cuentas').insert({cliente_id:clienteId, cta:cu.cta, corredora:cu.corredora, fondo_mutuo:cu.fondo_mutuo});
+        }
+      }
+
+      // Insert sociedades
+      for (const [rutSoc, soc] of Object.entries(data.sociedades)) {
+        // Check if sociedad exists as a cliente
+        let socId;
+        const existSoc = DB_CLIENTES.find(c => c.rut === rutSoc);
+        if (existSoc) {
+          socId = existSoc.id;
+        } else {
+          const {data:newS, error} = await SB.from('clientes').insert({
+            rut: rutSoc,
+            nombre: soc.nombre.toUpperCase() || 'SOCIEDAD',
+            tipo: 'institucional',
+            agente,
+            titular_rut: rut  // link back to natural person
+          }).select().single();
+          if (!error) socId = newS.id;
+        }
+        // Insert cuentas de la sociedad
+        if (socId) {
+          for (const cu of soc.cuentas) {
+            const existCu = existSoc?.cuentas?.find(c => c.cta === cu.cta);
+            if (!existCu) {
+              await SB.from('cuentas').insert({cliente_id:socId, cta:cu.cta, corredora:cu.corredora, fondo_mutuo:cu.fondo_mutuo});
+            }
+          }
+        }
+      }
+    } catch(e) { errores++; }
+  }
+
+  await cargarClientes();
+  renderClientes();
+
+  btn.textContent = 'Importar clientes';
+  btn.disabled = false;
+
+  msgEl.className = 'status-msg ok';
+  msgEl.textContent = `✓ ${creados} creados · ${actualizados} actualizados${errores?' · '+errores+' errores':''}`;
+  setTimeout(() => { msgEl.textContent=''; cerrarCargaMasiva(); }, 4000);
+}
+
+// ═══════════════════════════════════════════════════════════
 // CONFIG UI
 // ═══════════════════════════════════════════════════════════
 function renderConfigUI() {
@@ -3819,7 +4190,8 @@ function abrirModal() {
   editId=null;document.getElementById('modal-title').textContent='Nuevo cliente';
   ['m-rut','m-nombre','m-agente'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('m-tipo').value='persona';
-  cuentasModal=[];renderCuentasModal();
+  cuentasModal=[]; renderCuentasModal();
+  sociedadesModal=[]; renderSociedadesModal();
   document.getElementById('modal').style.display='flex';
 }
 function editarCliente(id) {
@@ -3828,6 +4200,11 @@ function editarCliente(id) {
   document.getElementById('m-rut').value=c.rut;document.getElementById('m-nombre').value=c.nombre;
   document.getElementById('m-tipo').value=c.tipo;document.getElementById('m-agente').value=c.agente||'';
   cuentasModal=c.cuentas.map(cu=>({...cu}));renderCuentasModal();
+  // Load sociedades (clientes with titular_rut = c.rut)
+  sociedadesModal = DB_CLIENTES
+    .filter(x => x.titular_rut === c.rut)
+    .map(s => ({id:s.id, nombre:s.nombre, rut_sociedad:s.rut, cuentas:s.cuentas.map(cu=>({...cu}))}));
+  renderSociedadesModal();
   document.getElementById('modal').style.display='flex';
 }
 function cerrarModal(){document.getElementById('modal').style.display='none';}
@@ -3842,19 +4219,56 @@ function renderCuentasModal() {
 }
 function addCuentaRow(){cuentasModal.push({cta:'',corredora:'',fondo_mutuo:''});renderCuentasModal();}
 async function guardarCliente() {
-  const rut=document.getElementById('m-rut').value.trim();
-  const nombre=document.getElementById('m-nombre').value.trim();
-  if(!rut||!nombre){alert('RUT y nombre son obligatorios');return;}
-  if(editId){
-    await SB.from('clientes').update({nombre,tipo:document.getElementById('m-tipo').value,agente:document.getElementById('m-agente').value.trim()||null}).eq('id',editId);
-    const orig=DB_CLIENTES.find(c=>c.id===editId)?.cuentas||[];
-    for(const cu of orig) if(!cuentasModal.find(m=>m.id===cu.id)) await SB.from('cuentas').delete().eq('id',cu.id);
-    for(const cu of cuentasModal.filter(m=>!m.id)) await SB.from('cuentas').insert({cliente_id:editId,cta:cu.cta,corredora:cu.corredora||'',fondo_mutuo:cu.fondo_mutuo||''});
+  const rut    = document.getElementById('m-rut').value.trim();
+  const nombre = document.getElementById('m-nombre').value.trim();
+  const tipo   = document.getElementById('m-tipo').value;
+  const agente = document.getElementById('m-agente').value.trim() || null;
+  if (!rut||!nombre) { alert('RUT y nombre son obligatorios'); return; }
+
+  let clienteId = editId;
+
+  if (editId) {
+    await SB.from('clientes').update({nombre, tipo, agente}).eq('id', editId);
+    // Update cuentas propias
+    const orig = DB_CLIENTES.find(c=>c.id===editId)?.cuentas||[];
+    for (const cu of orig) if (!cuentasModal.find(m=>m.id===cu.id)) await SB.from('cuentas').delete().eq('id',cu.id);
+    for (const cu of cuentasModal.filter(m=>!m.id)) await SB.from('cuentas').insert({cliente_id:editId,cta:cu.cta,corredora:cu.corredora||'',fondo_mutuo:cu.fondo_mutuo||''});
   } else {
-    const{data}=await SB.from('clientes').insert({rut,nombre,tipo:document.getElementById('m-tipo').value,agente:document.getElementById('m-agente').value.trim()||null}).select().single();
-    if(data) for(const cu of cuentasModal) await SB.from('cuentas').insert({cliente_id:data.id,cta:cu.cta,corredora:cu.corredora||'',fondo_mutuo:cu.fondo_mutuo||''});
+    const {data} = await SB.from('clientes').insert({rut, nombre, tipo, agente}).select().single();
+    if (!data) return;
+    clienteId = data.id;
+    for (const cu of cuentasModal) await SB.from('cuentas').insert({cliente_id:clienteId,cta:cu.cta,corredora:cu.corredora||'',fondo_mutuo:cu.fondo_mutuo||''});
   }
-  cerrarModal();await cargarClientes();renderClientes();
+
+  // Save sociedades
+  for (const soc of sociedadesModal) {
+    if (!soc.rut_sociedad || !soc.nombre) continue;
+    let socId = soc.id;
+    if (!socId) {
+      // Check if already exists
+      const existSoc = DB_CLIENTES.find(c => c.rut === soc.rut_sociedad);
+      if (existSoc) {
+        socId = existSoc.id;
+        await SB.from('clientes').update({nombre:soc.nombre, tipo:'institucional', titular_rut:rut}).eq('id',socId);
+      } else {
+        const {data:sd} = await SB.from('clientes').insert({
+          rut:soc.rut_sociedad, nombre:soc.nombre, tipo:'institucional', agente, titular_rut:rut
+        }).select().single();
+        if (sd) socId = sd.id;
+      }
+    } else {
+      await SB.from('clientes').update({nombre:soc.nombre, titular_rut:rut}).eq('id',socId);
+    }
+    if (socId) {
+      for (const cu of (soc.cuentas||[]).filter(c=>!c.id)) {
+        await SB.from('cuentas').insert({cliente_id:socId, cta:cu.cta, corredora:cu.corredora||'', fondo_mutuo:cu.fondo_mutuo||''});
+      }
+    }
+  }
+
+  cerrarModal();
+  await cargarClientes();
+  renderClientes();
 }
 
 // ── UTILS ──
