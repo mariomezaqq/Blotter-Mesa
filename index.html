@@ -1004,14 +1004,25 @@ tr:hover td{background:var(--surface2)}
 
         <!-- ── RESÚMENES ── -->
         <div id="sec-resumenes" class="section">
+          <!-- Date selector -->
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text2);font-family:var(--mono)">Fecha:</div>
+            <input type="date" id="res-fecha"
+              style="font-family:var(--mono);font-size:12px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none;cursor:pointer"
+              onchange="cargarResumenes()">
+            <button class="btn sm" onclick="setResumenFecha(0)">Hoy</button>
+            <button class="btn sm" onclick="setResumenFecha(-1)">Ayer</button>
+            <button class="btn sm" onclick="setResumenFecha(-7)">Hace 7 días</button>
+            <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="res-fecha-label"></span>
+          </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
             <div class="metric" style="padding:14px 16px">
-              <div class="metric-label">Monto total hoy</div>
+              <div class="metric-label">Monto total</div>
               <div class="metric-val mono" id="res-monto-total" style="font-size:16px">$0</div>
               <div class="metric-sub">CLP · todas las órdenes</div>
             </div>
             <div class="metric" style="padding:14px 16px">
-              <div class="metric-label">Órdenes del día</div>
+              <div class="metric-label">Órdenes</div>
               <div class="metric-val mono" id="res-ordenes-total">0</div>
               <div class="metric-sub" id="res-banqueros-activos">0 banqueros operando</div>
             </div>
@@ -1214,7 +1225,12 @@ tr:hover td{background:var(--surface2)}
         <div class="field f3"><label>RUT</label><input id="m-rut" type="text" placeholder="12345678-9"></div>
         <div class="field f3"><label>Tipo</label><select id="m-tipo"><option value="persona">Persona natural</option><option value="institucional">Institucional</option></select></div>
         <div class="field f6"><label>Nombre / Razón Social</label><input id="m-nombre" type="text" placeholder="NOMBRE EN MAYÚSCULAS"></div>
-        <div class="field f3"><label>Agente</label><input id="m-agente" type="text" placeholder="981"></div>
+        <div class="field f3">
+                  <label>Banquero asignado</label>
+                  <select id="m-banquero" style="font-family:var(--font);font-size:12px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none;width:100%">
+                    <option value="">— Sin asignar —</option>
+                  </select>
+                </div>
       </div>
       <div class="divider"></div>
       <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text2);margin-bottom:8px;font-family:var(--mono)">Sociedades vinculadas</div>
@@ -1792,7 +1808,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
 // ═══════════════════════════════════════════════════════════
 async function cargarClientes() {
   const { data } = await SB.from('clientes').select('*, cuentas(*)').order('nombre');
-  DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[], titular_rut:c.titular_rut||null}));
+  DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[], titular_rut:c.titular_rut||null, banquero_asignado:c.banquero_asignado||null}));
 }
 async function aprobarBanquero(id) {
   await SB.from('banqueros').update({estado:'activo'}).eq('id', id);
@@ -2076,7 +2092,7 @@ function renderClientes() {
       <div class="db-client-head">
         <div>
           <div class="db-client-name">${c.nombre} <span class="pill ${c.tipo}" style="margin-left:3px">${c.tipo==='institucional'?'Inst.':'Persona'}</span></div>
-          <div class="db-client-rut">${c.rut}${c.agente?' · Agente '+c.agente:''}</div>
+          <div class="db-client-rut">${c.rut}${c.banquero_asignado?' · <span style="color:var(--accent);font-size:10px">'+c.banquero_asignado.split(' ')[0]+'</span>':''}</div>
         </div>
         <div style="display:flex;gap:3px;flex-shrink:0">
           <button class="btn sm" onclick="editarCliente(${c.id})">Editar</button>
@@ -2084,7 +2100,7 @@ function renderClientes() {
         </div>
       </div>
       <div class="db-cuentas">
-        ${c.cuentas.map(cu=>`<span class="db-cuenta-tag">Cta.${cu.cta}${cu.corredora?' · '+cu.corredora:''}${cu.fondo_mutuo?' · '+cu.fondo_mutuo:''}</span>`).join('')}
+        ${c.cuentas.map(cu=>`<span class="db-cuenta-tag">Cta.${cu.cta}${cu.corredora?' · '+cu.corredora:''}</span>`).join('')}
         ${!c.cuentas.length && !DB_CLIENTES.filter(s=>s.titular_rut===c.rut).length ?'<span style="font-size:10px;color:var(--text3)">Sin cuentas</span>':''}
       </div>
       ${DB_CLIENTES.filter(s=>s.titular_rut===c.rut).map(soc=>`
@@ -2719,10 +2735,16 @@ function extractNemoFromText(text) {
   const up = text.toUpperCase();
 
   // 1. "de NEMO" pattern: "100 palos de COPEC para..."
-  const dePattern = up.match(/\bde\s+([A-Z][A-Z0-9\-\.]{1,14})\b/);
+  // Exclude "del" (de+el), "de la", "de los" — these are prepositions not nemos
+  const dePattern = up.match(/\bde\s+([A-Z][A-Z0-9\-\.]{2,14})\b/);
   if (dePattern) {
-    const r = resolveNemoConFondos(dePattern[1]);
-    if (!r.unknown || NEMO_ALIASES[dePattern[1]]) return {raw:dePattern[1], result:r};
+    const candidate = dePattern[1];
+    // Skip common Spanish articles and prepositions that follow "de"
+    const SKIP_AFTER_DE = new Set(['LA','EL','LOS','LAS','UN','UNA','SU','MIS','LO']);
+    if (!SKIP_AFTER_DE.has(candidate)) {
+      const r = resolveNemoConFondos(candidate);
+      if (!r.unknown || NEMO_ALIASES[candidate]) return {raw:candidate, result:r};
+    }
   }
 
   // 2. Direct alias scan
@@ -2757,6 +2779,8 @@ function extractNemoFromText(text) {
 // PROCESS COMMAND
 // ═══════════════════════════════════════════════════════════
 function processCommand(text) {
+  // Normalize "del X" → "de X", "al X" → "a X" to avoid preposition confusion
+  text = text.replace(/\bdel\s+/gi, 'de ').replace(/\bal\s+/gi, 'a ');
   if (/\b(SALDO|BALANCE|DISPONIBLE)\b/i.test(text)) { parseSaldo(text); return; }
   if (/\b(APORTE|APORTAR|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
   if (/\b(RESCATE|RESCATAR)\b/i.test(text)) { parseAporte(text,'Rescate'); return; }
@@ -2791,7 +2815,7 @@ function parseOrden(text, forceOp) {
   if (corrExpl) {
     corredora = corrExpl[1].toUpperCase();
   } else {
-    const knownCorr = [...Object.keys(corredorasConfig),'SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4'];
+    const knownCorr = [...Object.keys(corredorasConfig),'SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC','FYNSA','SCOTIA','BANCHILE','EUROAMERICA','TANNER','NEVASA','CAPITARIA','SURA'];
     for (const k of knownCorr) { if (text.toUpperCase().includes(k.toUpperCase())) { corredora=k; break; } }
   }
 
@@ -3039,13 +3063,19 @@ function handleNemoClarify(text) {
   if (!chatContext?.parsed) return;
   const parsed = chatContext.parsed;
 
-  if (parsed.nemoRaw && parsed.nemoRaw !== nemo) {
+  // Safety: never learn an alias that is too long (full sentence) or a stopword
+  const NEVER_ALIAS = new Set(['DEL','DE','LA','EL','AL','UN','UNA','LOS','LAS','POR','VIA','PARA']);
+  const raw = (parsed.nemoRaw||'').toUpperCase().trim();
+  const shouldLearn = raw && raw !== nemo && raw.length <= 20 && !NEVER_ALIAS.has(raw)
+    && !raw.includes(' ') === false || raw.split(' ').length <= 3; // max 3 words as alias
+
+  if (shouldLearn && raw.length >= 2 && raw.length <= 30) {
     if (!NEMO_ALIASES[nemo]) NEMO_ALIASES[nemo] = [];
-    if (!NEMO_ALIASES[nemo].includes(parsed.nemoRaw)) {
-      NEMO_ALIASES[nemo].push(parsed.nemoRaw);
+    if (!NEMO_ALIASES[nemo].includes(raw)) {
+      NEMO_ALIASES[nemo].push(raw);
       guardarAliases();
       renderAliasConfig();
-      botMsg(`✓ Aprendí: <strong>${parsed.nemoRaw}</strong> = <strong>${nemo}</strong>`);
+      botMsg(`✓ Aprendí: <strong>${raw}</strong> = <strong>${nemo}</strong>`);
     }
   }
   parsed.nemo = nemo;
@@ -3069,13 +3099,16 @@ function resolveNemoDisambig(text) {
   const candidates = parsed.nemoResult?.candidates || [];
   const finalNemo  = candidates.find(c => c===nemo || c.startsWith(nemo.slice(0,3))) || nemo;
 
-  if (parsed.nemoRaw && parsed.nemoRaw !== finalNemo) {
+  const rawDisambig = (parsed.nemoRaw||'').toUpperCase().trim();
+  const NEVER_ALIAS2 = new Set(['DEL','DE','LA','EL','AL','UN','UNA','LOS','LAS']);
+  if (rawDisambig && rawDisambig !== finalNemo && rawDisambig.length >= 2
+      && rawDisambig.length <= 30 && !NEVER_ALIAS2.has(rawDisambig)) {
     if (!NEMO_ALIASES[finalNemo]) NEMO_ALIASES[finalNemo] = [];
-    if (!NEMO_ALIASES[finalNemo].includes(parsed.nemoRaw)) {
-      NEMO_ALIASES[finalNemo].push(parsed.nemoRaw);
+    if (!NEMO_ALIASES[finalNemo].includes(rawDisambig)) {
+      NEMO_ALIASES[finalNemo].push(rawDisambig);
       guardarAliases();
       renderAliasConfig();
-      botMsg(`✓ Aprendí: <strong>${parsed.nemoRaw}</strong> → <strong>${finalNemo}</strong>`);
+      botMsg(`✓ Aprendí: <strong>${rawDisambig}</strong> → <strong>${finalNemo}</strong>`);
     }
   }
   parsed.nemo = finalNemo;
@@ -3166,7 +3199,7 @@ function parseAporte(text, forceInstruccion) {
 
   // Corredora para aportes (para saber a quién enviar)
   let corredora = '';
-  const KNOWN_BROKERS = ['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC'];
+  const KNOWN_BROKERS = ['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC','FYNSA','SCOTIA','BANCHILE','EUROAMERICA','TANNER','NEVASA','CAPITARIA','SURA'];
   const corrExpl = text.match(/(?:por|v[ií]a|corredora)\s+([A-Z]{2,10})/i);
   if (corrExpl) corredora = corrExpl[1].toUpperCase();
   else { for (const k of KNOWN_BROKERS) { if (text.toUpperCase().includes(k)) { corredora=k; break; } } }
@@ -3536,9 +3569,30 @@ function getHistorialBanquero() {
 // ═══════════════════════════════════════════════════════════
 // RESÚMENES DEL DÍA
 // ═══════════════════════════════════════════════════════════
+function setResumenFecha(offset) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  const str = d.toISOString().slice(0,10);
+  document.getElementById('res-fecha').value = str;
+  cargarResumenes();
+}
+
 async function cargarResumenes() {
-  const { data: ordenes } = await SB.from('ordenes').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
-  const { data: aportes } = await SB.from('aportes').select('*').eq('fecha',todayStr());
+  // Init date picker to today if empty
+  const picker = document.getElementById('res-fecha');
+  if (!picker.value) picker.value = todayStr();
+  const fecha = picker.value;
+
+  // Show label
+  const label = document.getElementById('res-fecha-label');
+  if (label) {
+    const isToday = fecha === todayStr();
+    const d = new Date(fecha + 'T12:00:00');
+    label.textContent = isToday ? '— Hoy' : '— ' + d.toLocaleDateString('es-CL',{weekday:'long',day:'numeric',month:'long'});
+  }
+
+  const { data: ordenes } = await SB.from('ordenes').select('*').eq('fecha',fecha).order('id',{ascending:false});
+  const { data: aportes } = await SB.from('aportes').select('*').eq('fecha',fecha);
   const todos = ordenes || [];
   const aportesTodos = aportes || [];
 
@@ -4066,16 +4120,16 @@ async function guardarConfigCorredoras() {
 // SAVE OPERATIONS (from forms)
 // ═══════════════════════════════════════════════════════════
 async function autoGuardarCliente(rut, nombre, cta, corredora) {
-  const ex=DB_CLIENTES.find(c=>c.rut===rut);
-  if(ex){
-    if(cta&&!ex.cuentas.find(c=>c.cta===cta)){
-      await SB.from('cuentas').insert({cliente_id:ex.id,cta,corredora:corredora||''});
+  const ex = DB_CLIENTES.find(c => c.rut === rut);
+  if (ex) {
+    if (cta && !ex.cuentas.find(c => c.cta === cta)) {
+      await SB.from('cuentas').insert({cliente_id:ex.id, cta, corredora:corredora||''});
       await cargarClientes();
     }
     return;
   }
-  const {data}=await SB.from('clientes').insert({rut,nombre,tipo:'persona'}).select().single();
-  if(data&&cta) await SB.from('cuentas').insert({cliente_id:data.id,cta,corredora:corredora||''});
+  const {data} = await SB.from('clientes').insert({rut, nombre, tipo:'persona'}).select().single();
+  if (data && cta) await SB.from('cuentas').insert({cliente_id:data.id, cta, corredora:corredora||''});
   await cargarClientes();
 }
 async function guardarOrden() {
@@ -4188,17 +4242,26 @@ function limpiarSaldo() {
 // ── MODAL CLIENTE ──
 function abrirModal() {
   editId=null;document.getElementById('modal-title').textContent='Nuevo cliente';
-  ['m-rut','m-nombre','m-agente'].forEach(id=>document.getElementById(id).value='');
+  ['m-rut','m-nombre'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('m-tipo').value='persona';
+  poblarBanqueroSelect('m-banquero', null);
   cuentasModal=[]; renderCuentasModal();
   sociedadesModal=[]; renderSociedadesModal();
   document.getElementById('modal').style.display='flex';
+}
+
+function poblarBanqueroSelect(selectId, selectedNombre) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— Sin asignar —</option>' +
+    BANKERS_DB.map(b => `<option value="${b.nombre}" ${b.nombre===selectedNombre?'selected':''}>${b.nombre} · ${b.rol||'banquero'}</option>`).join('');
 }
 function editarCliente(id) {
   const c=DB_CLIENTES.find(x=>x.id===id);if(!c)return;
   editId=id;document.getElementById('modal-title').textContent='Editar cliente';
   document.getElementById('m-rut').value=c.rut;document.getElementById('m-nombre').value=c.nombre;
-  document.getElementById('m-tipo').value=c.tipo;document.getElementById('m-agente').value=c.agente||'';
+  document.getElementById('m-tipo').value=c.tipo;
+  poblarBanqueroSelect('m-banquero', c.banquero_asignado||null);
   cuentasModal=c.cuentas.map(cu=>({...cu}));renderCuentasModal();
   // Load sociedades (clientes with titular_rut = c.rut)
   sociedadesModal = DB_CLIENTES
@@ -4213,31 +4276,31 @@ function renderCuentasModal() {
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
       <input value="${cu.cta||''}" placeholder="Cta." style="width:70px;font-size:11px;padding:4px 7px;border:1px solid var(--border2);border-radius:var(--r);background:var(--surface2);font-family:var(--mono);color:var(--text);outline:none" oninput="cuentasModal[${i}].cta=this.value">
       <input value="${cu.corredora||''}" placeholder="Corredora" style="width:80px;font-size:11px;padding:4px 7px;border:1px solid var(--border2);border-radius:var(--r);background:var(--surface2);font-family:var(--mono);color:var(--text);outline:none" oninput="cuentasModal[${i}].corredora=this.value">
-      <input value="${cu.fondo_mutuo||''}" placeholder="Fondo Mutuo" style="flex:1;font-size:11px;padding:4px 7px;border:1px solid var(--border2);border-radius:var(--r);background:var(--surface2);font-family:var(--font);color:var(--text);outline:none" oninput="cuentasModal[${i}].fondo_mutuo=this.value">
+
       <button class="btn sm danger" onclick="cuentasModal.splice(${i},1);renderCuentasModal()">✕</button>
     </div>`).join('');
 }
-function addCuentaRow(){cuentasModal.push({cta:'',corredora:'',fondo_mutuo:''});renderCuentasModal();}
+function addCuentaRow(){cuentasModal.push({cta:'',corredora:''});renderCuentasModal();}
 async function guardarCliente() {
   const rut    = document.getElementById('m-rut').value.trim();
   const nombre = document.getElementById('m-nombre').value.trim();
-  const tipo   = document.getElementById('m-tipo').value;
-  const agente = document.getElementById('m-agente').value.trim() || null;
+  const tipo             = document.getElementById('m-tipo').value;
+  const banquero_asignado = document.getElementById('m-banquero')?.value || null;
   if (!rut||!nombre) { alert('RUT y nombre son obligatorios'); return; }
 
   let clienteId = editId;
 
   if (editId) {
-    await SB.from('clientes').update({nombre, tipo, agente}).eq('id', editId);
+    await SB.from('clientes').update({nombre, tipo, banquero_asignado}).eq('id', editId);
     // Update cuentas propias
     const orig = DB_CLIENTES.find(c=>c.id===editId)?.cuentas||[];
     for (const cu of orig) if (!cuentasModal.find(m=>m.id===cu.id)) await SB.from('cuentas').delete().eq('id',cu.id);
-    for (const cu of cuentasModal.filter(m=>!m.id)) await SB.from('cuentas').insert({cliente_id:editId,cta:cu.cta,corredora:cu.corredora||'',fondo_mutuo:cu.fondo_mutuo||''});
+    for (const cu of cuentasModal.filter(m=>!m.id)) await SB.from('cuentas').insert({cliente_id:editId,cta:cu.cta,corredora:cu.corredora||''});
   } else {
-    const {data} = await SB.from('clientes').insert({rut, nombre, tipo, agente}).select().single();
+    const {data} = await SB.from('clientes').insert({rut, nombre, tipo, banquero_asignado}).select().single();
     if (!data) return;
     clienteId = data.id;
-    for (const cu of cuentasModal) await SB.from('cuentas').insert({cliente_id:clienteId,cta:cu.cta,corredora:cu.corredora||'',fondo_mutuo:cu.fondo_mutuo||''});
+    for (const cu of cuentasModal) await SB.from('cuentas').insert({cliente_id:clienteId,cta:cu.cta,corredora:cu.corredora||''});
   }
 
   // Save sociedades
