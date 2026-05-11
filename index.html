@@ -1461,7 +1461,7 @@ function resolveNemoConFondos(raw) {
   const candidates = buscarFondo(raw, 0.60);
   if (!candidates.length) return exact; // unknown
 
-  if (candidates.length === 1 && candidates[0].score >= 0.85) {
+  if (candidates.length === 1 && candidates[0].score >= 0.92) {
     return {resolved: candidates[0].nemo, exact:false, original:raw, fondoMatch: candidates[0]};
   }
 
@@ -2600,6 +2600,22 @@ function handleChatInput(text) {
       handleMissingAporte(text.trim());
       return;
 
+    case 'await_cliente_select':
+      // User typed RUT or name manually
+      if (chatContext.parsed) {
+        const found = DB_CLIENTES.find(c => c.rut === text.trim() || normalizeRut(c.rut) === normalizeRut(text.trim()));
+        if (found) {
+          chatContext.parsed.cliente = found.nombre;
+          chatContext.parsed.rut = found.rut;
+          chatContext.parsed.clienteResult = {cliente:found, rut:found.rut, nombre:found.nombre};
+          const p = chatContext.parsed; chatContext = null;
+          checkMissingAndConfirm(p);
+        } else {
+          botMsg('No encontré ese RUT. Seleccioná uno de los botones o ingresá el RUT completo.');
+        }
+      }
+      return;
+
     case 'await_cuenta_aporte':
       if (chatContext.parsed) {
         chatContext.parsed.cta = text.trim();
@@ -2843,15 +2859,38 @@ function resolveCliente(text) {
   }
 
   let best = null, bestScore = 0;
+  const allMatches = [];
   for (const c of DB_CLIENTES) {
     const parts = c.nombre.toUpperCase().split(/\s+/);
     let score = 0;
     for (const w of words) {
       if (parts.some(p => p === w || p.startsWith(w) || (w.length >= 3 && p.startsWith(w.slice(0,3))))) score++;
     }
+    if (score >= 1) allMatches.push({c, score});
     if (score > bestScore) { bestScore = score; best = c; }
   }
-  if (best && bestScore >= 1) return {cliente:best, rut:best.rut, nombre:best.nombre, fuzzy:true};
+
+  // If multiple clients match with same score → ambiguous, return all candidates
+  const topMatches = allMatches.filter(m => m.score === bestScore);
+  if (topMatches.length > 1 && bestScore < 2) {
+    // Multiple clients match with only 1 word — too ambiguous
+    return {ambiguous: true, candidates: topMatches.map(m => m.c), nombre: words.join(' ')};
+  }
+  if (best && bestScore >= 1) {
+    // Require score >= 2 (at least 2 words match) for fuzzy match
+    // OR score == 1 but the matching word is long/unique (> 5 chars)
+    const matchedWords = words.filter(w => {
+      const parts = best.nombre.toUpperCase().split(/\s+/);
+      return parts.some(p => p === w || p.startsWith(w) || (w.length >= 3 && p.startsWith(w.slice(0,3))));
+    });
+    const isStrongSingle = matchedWords.length === 1 && matchedWords[0].length >= 6;
+    if (bestScore >= 2 || isStrongSingle) {
+      return {cliente:best, rut:best.rut, nombre:best.nombre, fuzzy:true};
+    }
+    // Weak single-word match — extract name candidate for new client flow
+    const nameCandidate = extractNameCandidate(words.join(' '));
+    if (nameCandidate) return {nombre:nameCandidate, rut:null, unknown:true, nameOnly:true};
+  }
 
   // 4. Try to extract a name-like string for new client
   const nameCandidate = extractNameCandidate(text);
@@ -2963,7 +3002,7 @@ function extractNemoFromText(text) {
   if (fondoSpan && fondoSpan.length >= 4) {
     const r = buscarFondo(fondoSpan, 0.55);
     if (r.length) {
-      if (r[0].score >= 0.85) return {raw:fondoSpan, result:{resolved:r[0].nemo, exact:false, original:fondoSpan, fondoMatch:r[0]}};
+      if (r[0].score >= 0.92) return {raw:fondoSpan, result:{resolved:r[0].nemo, exact:false, original:fondoSpan, fondoMatch:r[0]}};
       return {raw:fondoSpan, result:{ambiguous:true, candidates:r.map(x=>x.nemo), fondoCandidates:r, original:fondoSpan}};
     }
   }
@@ -3085,6 +3124,24 @@ function parseOrden(text, forceOp) {
     } else {
       botMsg('¿Cuál es el nemo? Los fondos parten con <strong>CFI</strong> o <strong>CFM</strong> · Las acciones son 2-4 letras (ej: <em>COPEC</em>, <em>LTM</em>)');
     }
+    return;
+  }
+
+  // ── Client ambiguous → ask which one ──
+  if (clientResult?.ambiguous) {
+    const candidates = clientResult.candidates;
+    chatContext = {state:'await_cliente_select', parsed};
+    const opts = candidates.map(c =>
+      `<button class="alias-opt" onclick="selectClienteBtn('${c.rut}')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+        <span style="font-weight:600">${c.nombre}</span>
+        <span style="font-size:10px;color:var(--text2);font-family:var(--mono)">${c.rut}</span>
+      </button>`
+    ).join('');
+    botMsg(`Hay varios clientes que coinciden con "<strong>${clientResult.nombre}</strong>". ¿Cuál es?`,
+      `<div class="alias-suggestion" style="margin-top:6px">
+        <div class="alias-sug-title">Seleccioná el cliente</div>
+        <div class="alias-sug-opts" style="flex-direction:column">${opts}</div>
+      </div>`);
     return;
   }
 
@@ -3240,6 +3297,17 @@ function handleMissingAporte(text) {
   }
   chatContext = null;
   checkMissingAporte(parsed);
+}
+
+function selectClienteBtn(rut) {
+  if (!chatContext?.parsed) return;
+  const found = DB_CLIENTES.find(c => c.rut === rut);
+  if (!found) return;
+  chatContext.parsed.cliente = found.nombre;
+  chatContext.parsed.rut = found.rut;
+  chatContext.parsed.clienteResult = {cliente:found, rut:found.rut, nombre:found.nombre};
+  const p = chatContext.parsed; chatContext = null;
+  checkMissingAndConfirm(p);
 }
 
 function selectCuentaAporteBtn(cta, corredora) {
