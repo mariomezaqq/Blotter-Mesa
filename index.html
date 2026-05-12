@@ -3719,9 +3719,12 @@ function processBloque(text) {
       .replace(/\bdel\s+/gi, 'de ').replace(/\bal\s+/gi, 'a ')
       .replace(/\bcomprale\b/gi,'compra').replace(/\bcómprale\b/gi,'compra')
       .replace(/\bcompremosle\b/gi,'compra').replace(/\bcompremosle\b/gi,'compra')
+      .replace(/\bcompremos\b/gi,'compra')
       .replace(/\bvendele\b/gi,'venta').replace(/\bvéndale\b/gi,'venta')
+      .replace(/\bvendale\b/gi,'venta').replace(/\bvendémosle\b/gi,'venta')
       .replace(/\baportale\b/gi,'aporte').replace(/\brescatale\b/gi,'rescate')
-      .trim();
+      .replace(/,?\s*tambi[eé]n\s*/gi,' ').replace(/,?\s*adem[aá]s\s*/gi,' ')
+      .replace(/,?\s*y\s+tambi[eé]n\s*/gi,' ').replace(/^[,\s]+/,'').trim();
 
     try {
       const parsed = parsearOrdenSilenciosa(parte, i + 1);
@@ -3743,6 +3746,15 @@ function processBloque(text) {
 
 // Parsea una operación sin mostrar nada en el chat — retorna el objeto parsed o null
 function parsearOrdenSilenciosa(text, idx) {
+  // Normalize informal verbs first
+  text = text
+    .replace(/\bcomprale\b/gi,'compra').replace(/\bcómprale\b/gi,'compra')
+    .replace(/\bcompremosle\b/gi,'compra').replace(/\bcompremos\b/gi,'compra')
+    .replace(/\bvendele\b/gi,'venta').replace(/\bvéndale\b/gi,'venta')
+    .replace(/\bvendale\b/gi,'venta').replace(/\bvendémosle\b/gi,'venta')
+    .replace(/\baportale\b/gi,'aporte').replace(/\brescatale\b/gi,'rescate')
+    .replace(/\bdel\s+/gi,'de ').replace(/\bal\s+/gi,'a ');
+
   const upT = text.toUpperCase();
   let tipo = null;
 
