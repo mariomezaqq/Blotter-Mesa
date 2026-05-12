@@ -3653,8 +3653,8 @@ function checkMissingAporte(parsed) {
 // BLOQUE MULTI-ORDEN — parsea varias operaciones a la vez
 // ═══════════════════════════════════════════════════════════
 function splitEnOrdenes(text) {
-  // Cruce maneja su propio split interno
-  if (/\b(CRUCE|CROSS)\b/i.test(text)) return [text];
+  // Si hay CRUCE en el texto → nunca dividir, parseCruce maneja todo
+  if (/\b(CRUCE|CROSS|CRUCEME|CRUZAME)\b/i.test(text)) return [text];
 
   const VERBS = /(compra|comprar|venta|vender|vendo|vende|aporte|aportar|rescate|rescatar|saldo|cruce|comprale|cómprale|compremos|compremosle|vendele|véndale|vendemos|aportale)/i;
 
@@ -3699,6 +3699,13 @@ function splitEnOrdenes(text) {
 }
 
 function processBloque(text) {
+  // Si empieza con "cruce" (o variante) → ir directo, nunca dividir
+  const textClean = text.replace(/^(hola[,!.]*|buenas[,!.]*|hey[,!.]*)\s*/i,'').trim();
+  if (/^(cruce|cross|cruceme|cruzame)\b/i.test(textClean)) {
+    processCommand(textClean);
+    return;
+  }
+
   const partes = splitEnOrdenes(text);
 
   if (partes.length <= 1) {
@@ -3934,14 +3941,24 @@ function parseCruce(text) {
   const upT = text.toUpperCase();
 
   // ── Nemo ──────────────────────────────────────────────────
-  const nemoFound = extractNemoFromText(text);
+  // Normalizar "en NEMO" → "de NEMO" para que extractNemoFromText lo encuentre
+  const textNemo = text.replace(/\ben\s+([A-ZÁÉÍÓÚA-Za-z])/g, 'de $1');
+  const nemoFound = extractNemoFromText(textNemo);
   const nemoResult = nemoFound ? nemoFound.result : {resolved:'', unknown:true};
   const nemo = nemoResult.resolved || nemoFound?.raw || '';
 
   // ── Precio ────────────────────────────────────────────────
   let precio = null;
-  const precioM = text.match(/a\s+(\d[\d.,]*)/i);
-  if (precioM) precio = Math.round(parseFloat(precioM[1].replace(/\./g,'').replace(',','.')));
+  const precioM = text.match(/(?:a|precio)\s+(\d[\d.,]*)/i);
+  if (precioM) {
+    const raw = precioM[1];
+    // Handle Chilean decimal comma: "1055,4" → 1055.4 but "1.055,4" → 1055.4
+    if (/,/.test(raw) && !/\.\d{3}/.test(raw)) {
+      precio = parseFloat(raw.replace(',','.'));
+    } else {
+      precio = Math.round(parseFloat(raw.replace(/\./g,'').replace(',','.')));
+    }
+  }
 
   // ── Condición ─────────────────────────────────────────────
   let condicion = '';
