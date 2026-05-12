@@ -3965,54 +3965,106 @@ function parseCruce(text) {
     }
   }
 
-  // ── Separar lados: vende/vendedores y compra/compradores ──
-  // Split on "/" or on keyword boundary "compra ... vende" or "vende ... compra"
+  // ── Separar lados: vendedores y compradores ─────────────
+  // Soporta múltiples formatos:
+  // "vende Juan 600, Pedro 400 / compra Mario 500"  (explícito)
+  // "Mario compra 20 palos y Juan se las vende"      (natural)
+  // "compra Mario 500, Ian 500 vende Juan 1000"      (sin slash)
   let vendedoresTxt = '', compradoresTxt = '';
 
-  // Try explicit "/" separator first
-  const slashM = text.match(/vende[s]?\s+(.+?)\s*\/\s*compra[s]?\s+(.+?)$/i) ||
-                 text.match(/compra[s]?\s+(.+?)\s*\/\s*vende[s]?\s+(.+?)$/i);
-  if (slashM) {
-    // Check which order
-    if (/^vende/i.test(slashM[0])) { vendedoresTxt = slashM[1]; compradoresTxt = slashM[2]; }
-    else                            { compradoresTxt = slashM[1]; vendedoresTxt = slashM[2]; }
-  } else {
-    // Try without slash: "vende X compra Y"
-    const noSlashV = text.match(/vende[s]?\s+(.+?)\s+compra[s]?\s+(.+?)$/i);
-    const noSlashC = text.match(/compra[s]?\s+(.+?)\s+vende[s]?\s+(.+?)$/i);
-    if (noSlashV) { vendedoresTxt = noSlashV[1]; compradoresTxt = noSlashV[2]; }
-    else if (noSlashC) { compradoresTxt = noSlashC[1]; vendedoresTxt = noSlashC[2]; }
+  // Limpiar el texto para el análisis de participantes
+  // Quitar nemo, precio, condición, corredora para aislar nombres
+  let textParticipantes = text
+    .replace(/\bCF[IM][A-Z0-9\-]{2,}\b/gi, '')   // nemos CFI/CFM
+    .replace(/[A-Z]{2,7}(-[A-Z])?/g, m => {          // acciones (2-7 letras mayúsculas)
+      const BROKERS = new Set(['PH','PM','CN','LV','MBI','BTG','SMB','LC','LTM']);
+      return BROKERS.has(m) ? m : '';  // solo dejar brokers/condiciones conocidas
+    })
+    .replace(/\b(a|al|de|del|por|via|precio|palos?|millones?|lucas?|cuotas?)\s+[\d.,]+/gi, '')
+    .replace(/\b[\d.,]+\s*(palos?|millones?|lucas?|cuotas?|acc\.?)?/gi, '')
+    .replace(/\b(PH|PM|CN|paga\s*hoy|paga\s*ma[ñn]|contado)\b/gi, '')
+    .replace(/\s+/g, ' ').trim();
+
+  // ── Formato 1: slash explícito "vende X / compra Y" ──────
+  const slashVC = text.match(/vende[s]?\s+(.+?)\s*\/\s*compra[s]?\s+(.+?)(?:\s*$|\s+(?:PH|PM|CN|precio))/i);
+  const slashCV = text.match(/compra[s]?\s+(.+?)\s*\/\s*vende[s]?\s+(.+?)(?:\s*$|\s+(?:PH|PM|CN|precio))/i);
+  if (slashVC) { vendedoresTxt = slashVC[1]; compradoresTxt = slashVC[2]; }
+  else if (slashCV) { compradoresTxt = slashCV[1]; vendedoresTxt = slashCV[2]; }
+
+  // ── Formato 2: "vende X compra Y" sin slash ──────────────
+  else {
+    const noSlashVC = text.match(/vende[s]?\s+(.+?)\s+compra[s]?\s+(.+?)(?:\s*$)/i);
+    const noSlashCV = text.match(/compra[s]?\s+(.+?)\s+vende[s]?\s+(.+?)(?:\s*$)/i);
+    if (noSlashVC) { vendedoresTxt = noSlashVC[1]; compradoresTxt = noSlashVC[2]; }
+    else if (noSlashCV) { compradoresTxt = noSlashCV[1]; vendedoresTxt = noSlashCV[2]; }
   }
 
-  // ── Parse participantes: "Juan 600, Pedro 400" ────────────
-  function parseParticipantes(txt) {
-    if (!txt) return [];
-    // Split by comma
-    return txt.split(',').map(part => {
-      part = part.trim();
-      // Extract number (cantidad) — last number in the part
-      const numM = part.match(/(\d[\d.,]*)\s*$/);
-      const cantidad = numM ? Math.round(parseFloat(numM[1].replace(/\./g,'').replace(',','.'))) : null;
-      // Name is everything before the last number
-      const nombreRaw = numM ? part.slice(0, part.lastIndexOf(numM[0])).trim() : part;
-      const clientResult = resolveCliente(nombreRaw);
+  // ── Formato 3: lenguaje natural con sujeto explícito ─────
+  // "Mario compra... y Juan se las vende/compra"
+  // "Juan le compra a Mario que vende"
+  if (!vendedoresTxt && !compradoresTxt) {
+    // Buscar patrones "[NOMBRE] compra" y "[NOMBRE] vende"
+    const patronCompra = /([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+(?:compra|le\s+compra|quiere\s+comprar)/gi;
+    const patronVenta  = /([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+(?:vende|le\s+vende|se\s+las\s+(?:compra|vende)|quiere\s+vender)/gi;
+
+    const nombresCompra = [...text.matchAll(patronCompra)].map(m => m[1].trim());
+    const nombresVenta  = [...text.matchAll(patronVenta)].map(m => m[1].trim());
+
+    // "X se las compra" = X es comprador (le compra a quien vende)
+    // "X se las vende" = X es vendedor
+    // Detectar "se las compra" → ese es el comprador
+    const seLasCompraM = text.match(/([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+se\s+las\s+compra/i);
+    const seLasVendeM  = text.match(/([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+se\s+las\s+vende/i);
+    if (seLasCompraM) nombresCompra.push(seLasCompraM[1].trim());
+    if (seLasVendeM)  nombresVenta.push(seLasVendeM[1].trim());
+
+    if (nombresCompra.length || nombresVenta.length) {
+      compradoresTxt = nombresCompra.join(', ');
+      vendedoresTxt  = nombresVenta.join(', ');
+    }
+  }
+
+  // ── Formato 4: si solo hay 2 participantes y no se identifica quién vende/compra
+  // usar la cantidad del cruce y dividir equitativamente (edge case)
+
+  // ── Parse participantes: "Juan 600, Pedro 400" ──────────
+  function parseParticipantes(txt, cantidadTotal) {
+    if (!txt || !txt.trim()) return [];
+    const partes = txt.split(/,|\s+y\s+/).map(p => p.trim()).filter(Boolean);
+    return partes.map(part => {
+      // Extract trailing number if present
+      const numM = part.match(/(\d[\d.,]*)(?:\s*(?:palos?|millones?|acc\.?))?\s*$/i);
+      let cantidad = numM ? parseMontoNatural(numM[0]) : null;
+      const nombreRaw = numM ? part.slice(0, part.search(/(\d[\d.,]*)(?:\s*(?:palos?|millones?|acc\.?))?\s*$/i)).trim() : part.trim();
+      // Clean noise words from name
+      const nombre = nombreRaw
+        .replace(/\b(para|de|a|el|la|los|las|se|las|les|le|un|una)\b/gi, '')
+        .replace(/\s+/g,' ').trim();
+      if (!nombre || nombre.length < 2) return null;
+      const clientResult = resolveCliente(nombre);
       return {
-        nombreRaw: nombreRaw.toUpperCase(),
-        nombre: clientResult?.nombre || nombreRaw.toUpperCase(),
+        nombreRaw: nombre.toUpperCase(),
+        nombre: clientResult?.nombre || nombre.toUpperCase(),
         rut:    clientResult?.rut    || '',
         cta:    clientResult?.cliente?.cuentas?.[0]?.cta || '',
         clienteResult,
         cantidad
       };
-    }).filter(p => p.nombreRaw.length > 0);
+    }).filter(Boolean).filter(p => p.nombreRaw.length >= 2);
   }
 
   const vendedores  = parseParticipantes(vendedoresTxt);
   const compradores = parseParticipantes(compradoresTxt);
 
-  // ── Validate ──────────────────────────────────────────────
+  // ── Si no se pudieron separar, mostrar ayuda contextual ──
   if (!vendedores.length && !compradores.length) {
-    botMsg('No pude identificar compradores ni vendedores. Usá el formato:<br><em>cruce 1000 COPEC a 9200 PH LV vende Juan 600, Pedro 400 / compra Mario 500, Ian 500</em>');
+    botMsg('Entendí que es un cruce de <strong>' + (nemo||'?') + '</strong>. ' +
+      '¿Quién compra y quién vende?<br>' +
+      '<em>Ejemplo: vende Juan 1000, compra Mario 1000</em>');
+    chatContext = {state:'await_nemo_clarify', parsed: {...parsed,
+      nemo, nemoResult, precio, condicion, corredora,
+      esperandoLados: true
+    }};
     return;
   }
 
