@@ -3098,7 +3098,7 @@ function extractCantidadYPrecio(text) {
   if (precioKwM) {
     if (precioKwM[1] && cantidad === null)
       cantidad = Math.round(parseFloat(precioKwM[1].replace(/\./g,'').replace(',','.')));
-    precio = Math.round(parseFloat(precioKwM[2].replace(/\./g,'').replace(',','.')));
+    precio = parsePrecio(precioKwM[2]);
     t = t.replace(precioKwM[0], 'PRECIONUM');
   }
 
@@ -3106,25 +3106,25 @@ function extractCantidadYPrecio(text) {
   if (precio === null) {
     const aPrecioM = t.match(/\ba\s+(\d[\d.,]*)(?!\s*(?:palos?|millones?|MONTONUM))/i);
     if (aPrecioM) {
-      precio = Math.round(parseFloat(aPrecioM[1].replace(/\./g,'').replace(',','.')));
+      precio = parsePrecio(aPrecioM[1]);
       t = t.replace(aPrecioM[0], 'PRECIONUM');
     }
   }
 
-  // Step 5: monto + precio → derive cantidad
-  if (monto && precio && cantidad === null) { cantidad = Math.round(monto / precio); monto = null; }
+  // Step 5: monto + precio → derive cantidad (pero solo si no había qty explícita)
+  if (monto && precio && cantidad === null) { cantidad = Math.round(monto / precio); }
 
   // Step 6: bare number fallback
   const clean = t.replace(/\b(CUENTANUM|RUTNUM|MONTONUM|CANTNUM|PRECIONUM)\b/g, '');
   const nums = (clean.match(/\b(\d[\d.,]*)\b/g) || [])
-    .map(n => Math.round(parseFloat(n.replace(/\./g,'').replace(',','.'))))
+    .map(n => parseFloat(n.replace(/\./g,'').replace(',','.')))
     .filter(n => n > 0 && n < 999_999_999);
 
   if (cantidad === null && precio === null && monto === null) {
-    if (nums.length === 1) cantidad = nums[0];
-    else if (nums.length >= 2) { cantidad = nums[0]; precio = nums[1]; }
+    if (nums.length === 1) cantidad = Math.round(nums[0]);
+    else if (nums.length >= 2) { cantidad = Math.round(nums[0]); precio = nums[1]; }
   } else if (cantidad === null && precio !== null && nums.length > 0) {
-    cantidad = nums[0];
+    cantidad = Math.round(nums[0]);
   } else if (cantidad !== null && precio === null && nums.length > 0) {
     precio = nums[0];
   }
@@ -3444,11 +3444,11 @@ function processCommand(text) {
   text = text.replace(/\bdel\s+/gi, 'de ').replace(/\bal\s+/gi, 'a ');
   if (/\b(CRUCE|CROSS)\b/i.test(text)) { parseCruce(text); return; }
   
-  // Cruce implícito: "X vende ... Y compra" o "X compra ... Y vende" (sin separadores)
-  const tieneCompra = /\b(COMPRA|COMPRAR|COMPRO|COMPRÉ|COMPRÁ)\b/i.test(text);
-  const tieneVenta  = /\b(VENTA|VENDER|VENDO|VENDE|VENDÉ|VENDED)\b/i.test(text);
-  const tieneSep    = /\n|(?<=\S)\s*[\/\|]\s*(?=\S)/.test(text);
-  if (tieneCompra && tieneVenta && !tieneSep) {
+  // Cruce implícito: requiere pronombre anafórico (lo/los/las/le se compra/vende)
+  // que indica que el segundo participante refiere a la misma operación del primero.
+  // NO basta con que haya "compra" + "venta" en la frase: pueden ser operaciones distintas.
+  const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|le\s+)(?:compra|vende)\b/i;
+  if (pronombreCruce.test(text)) {
     parseCruce(text);
     return;
   }
@@ -3676,20 +3676,42 @@ function checkMissingAndConfirm(parsed) {
     }
   }
 
-  // Cantidad obligatoria para órdenes
-  if (parsed.type === 'orden' && (!parsed.cantidad || Number(parsed.cantidad) <= 0)) {
-    chatContext = {state:'await_missing_field', field:'cantidad', parsed};
-    const isFondo = /^CF[IM]/.test(parsed.nemo||'');
-    botMsg(`¿Cuál es la <strong>cantidad</strong> de ${isFondo?'cuotas':'acciones'}? (ej: <em>1000</em>, <em>20 palos</em>)`);
-    return;
+  // ── Auto-completar cantidad/precio si tenemos monto + uno de los dos ──
+  if (parsed.type === 'orden') {
+    const tieneCant   = parsed.cantidad && Number(parsed.cantidad) > 0;
+    const tienePrecio = parsed.precio && Number(parsed.precio) > 0;
+    const tieneMonto  = parsed.monto && Number(parsed.monto) > 0;
+    
+    if (tieneMonto && tieneCant && !tienePrecio) {
+      // Calcular precio = monto / cantidad
+      parsed.precio = Number(parsed.monto) / Number(parsed.cantidad);
+    } else if (tieneMonto && tienePrecio && !tieneCant) {
+      // Calcular cantidad = monto / precio
+      parsed.cantidad = Math.round(Number(parsed.monto) / Number(parsed.precio));
+    }
   }
 
+  // Para órdenes: precio se pregunta PRIMERO. Si después hay monto, se calcula la cantidad.
+  // Si no hay monto, se pregunta cantidad después.
+  
   // Precio obligatorio para órdenes
   if (parsed.type === 'orden' && (!parsed.precio || Number(parsed.precio) <= 0)) {
     chatContext = {state:'await_missing_field', field:'precio', parsed};
     const isFondo = /^CF[IM]/.test(parsed.nemo||'');
     botMsg(`¿Cuál es el <strong>${isFondo?'valor cuota':'precio'}</strong>? (ej: <em>1055.05</em>, <em>9200</em>)`);
     return;
+  }
+  
+  // Si llegamos acá con precio pero sin cantidad: ver si hay monto para calcular
+  if (parsed.type === 'orden' && (!parsed.cantidad || Number(parsed.cantidad) <= 0)) {
+    if (parsed.monto && Number(parsed.monto) > 0 && Number(parsed.precio) > 0) {
+      parsed.cantidad = Math.round(Number(parsed.monto) / Number(parsed.precio));
+    } else {
+      chatContext = {state:'await_missing_field', field:'cantidad', parsed};
+      const isFondo = /^CF[IM]/.test(parsed.nemo||'');
+      botMsg(`¿Cuál es la <strong>cantidad</strong> de ${isFondo?'cuotas':'acciones'}? (ej: <em>1000</em>, <em>20 palos</em>)`);
+      return;
+    }
   }
 
   pendingOrder = parsed;
@@ -4047,20 +4069,15 @@ function splitEnOrdenes(text) {
   if (/\b(CRUCE|CROSS|CRUCEME|CRUZAME)\b/i.test(text)) return [text];
 
   // ── Detección de cruce implícito ──────────────────────────────────
-  // Patrón: "X vende ... Y compra" o "X compra ... Y vende" en un solo párrafo
-  // sin separadores explícitos (sin / | ni saltos de línea)
-  // Ejemplos:
-  //   "Mario vende 50 palos albion y Iker los compra"
-  //   "Juan compra 1000 COPEC y Pedro se los vende"
-  //   "Bruno vende 30 LTM, Ian se los compra"
-  const tieneSeparadorExplicito = /\n|(?<=\S)\s*[\/\|]\s*(?=\S)/.test(text);
-  if (!tieneSeparadorExplicito) {
-    const vendeCompra = /\bvende[s]?\b.*?\b(?:se\s+l[oa]s?\s+)?compra[s]?\b/i.test(text);
-    const compraVende = /\bcompra[s]?\b.*?\b(?:se\s+l[oa]s?\s+)?vende[s]?\b/i.test(text);
-    if (vendeCompra || compraVende) {
-      // Es un cruce implícito → no dividir, dejar que parseCruce lo maneje
-      return [text];
-    }
+  // Un cruce real se detecta por PRONOMBRES ANAFÓRICOS que indican que el
+  // segundo participante refiere a la misma operación del primero:
+  //   "Mario vende 50 palos albion y Iker LOS compra"
+  //   "Juan compra 1000 COPEC y Pedro SE LOS vende"
+  //   "Bruno vende 30 LTM, Ian SE LOS compra"
+  // NO es cruce: "Iker vende X y Mario vende Y" (cada uno con su nemo)
+  const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|le\s+)(?:compra|vende)\b/i;
+  if (pronombreCruce.test(text)) {
+    return [text]; // dejar que parseCruce lo maneje
   }
 
   const VERBS = /(compra|comprar|venta|vender|vendo|vende|aporte|aportar|rescate|rescatar|saldo|cruce|comprale|cómprale|compremos|compremosle|vendele|véndale|vendemos|aportale)/i;
@@ -4082,13 +4099,6 @@ function splitEnOrdenes(text) {
   const matches = [...upText.matchAll(verbPattern)];
 
   if (matches.length >= 2) {
-    // Si los dos verbos son uno de compra y otro de venta → cruce implícito (ya tratado arriba pero por si acaso)
-    const tieneCompra = matches.some(m => /^COMPRA/.test(m[1]));
-    const tieneVenta  = matches.some(m => /^(VEND|VENTA)/.test(m[1]));
-    if (tieneCompra && tieneVenta && matches.length === 2) {
-      return [text];
-    }
-    
     // Encontrar el sujeto (cliente) antes de cada verbo
     // Para cada verbo, retroceder hasta encontrar un nombre propio o el final del verbo anterior
     const parts = [];
@@ -4214,7 +4224,7 @@ function parsearOrdenSilenciosa(text, idx) {
 
   if (tipo === 'orden_compra' || tipo === 'orden_venta') {
     const op = tipo === 'orden_compra' ? 'COMPRA' : 'VENTA';
-    const {cantidad, precio} = extractCantidadYPrecio(text);
+    const {cantidad, precio, monto} = extractCantidadYPrecio(text);
 
     let condicion = '';
     if (/\bPH\b/.test(upT)) condicion = 'PH';
@@ -4272,7 +4282,7 @@ function parsearOrdenSilenciosa(text, idx) {
 
     return {
       type: 'orden', op, nemo, nemoResult, nemoFound,
-      cantidad, precio, condicion, moneda, corredora, cta,
+      cantidad, precio, monto, condicion, moneda, corredora, cta,
       cliente: clientResult?.nombre || '',
       rut: clientResult?.rut || '',
       clienteResult, multiClientes,
