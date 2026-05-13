@@ -1885,6 +1885,303 @@ async function getOutlookToken() {
     const r=await msalInstance.acquireTokenPopup({scopes:['Mail.Send'],account:outlookAccount}); return r.accessToken;
   }
 }
+// Convierte un número (1,2,3...) a letra correlativa (A, B, C... Z, AA, AB...)
+function numeroALetra(n) {
+  let resultado = '';
+  while (n > 0) {
+    n--;
+    resultado = String.fromCharCode(65 + (n % 26)) + resultado;
+    n = Math.floor(n / 26);
+  }
+  return resultado;
+}
+
+// Detecta el tipo de operación para el subject
+function detectarTipoOperacion(datos) {
+  if (datos.esCruce) return 'Cruce entre clientes';
+  if (datos.instruccion) {
+    // Es un aporte/rescate
+    return datos.instruccion; // "APORTE", "RESCATE", etc.
+  }
+  // Es una orden
+  const op = (datos.operacion||'').toUpperCase();
+  const cond = (datos.condicion||'').toUpperCase();
+  if (cond === 'CN' || cond.includes('CRUCE')) return 'Cruce entre clientes';
+  if (op === 'COMPRA') return 'Compra Cliente';
+  if (op === 'VENTA') return 'Venta Cliente';
+  return op || 'Operación';
+}
+
+// Construye el subject con formato: ORDEN DD-MM L · Tipo
+async function construirSubject(datos, tipo='orden') {
+  const fecha = datos.fecha || todayStr();
+  const [yyyy, mm, dd] = fecha.split('-');
+  const fechaCorta = `${dd}-${mm}`;
+  
+  // Si ya tiene letra guardada, usarla (reenvíos)
+  let letra = datos.letra_op || null;
+  
+  if (!letra) {
+    // Calcular letra basada en orden de creación del día
+    let count = 1;
+    try {
+      const tabla = tipo === 'orden' ? 'ordenes' : 'aportes';
+      if (datos.id) {
+        // Orden existente: contar cuántas hay con id <= esta orden en el mismo día
+        const { data } = await SB.from(tabla).select('id').eq('fecha', fecha).order('id', {ascending:true});
+        const idx = (data||[]).findIndex(r => r.id === datos.id);
+        count = idx >= 0 ? idx + 1 : (data?.length || 1);
+      } else {
+        // Orden nueva: es la siguiente
+        const { count: c } = await SB.from(tabla).select('*', {count:'exact', head:true}).eq('fecha', fecha);
+        count = (c || 0) + 1;
+      }
+    } catch(e) { count = 1; }
+    
+    letra = numeroALetra(count);
+    
+    // Guardar la letra en la BD para reutilizarla en reenvíos
+    if (datos.id) {
+      try {
+        const tabla = tipo === 'orden' ? 'ordenes' : 'aportes';
+        await SB.from(tabla).update({letra_op: letra}).eq('id', datos.id);
+      } catch(e) { /* tabla puede no tener la columna aún */ }
+    }
+  }
+  
+  const tipoOp = detectarTipoOperacion(datos);
+  const prefijo = tipo === 'orden' ? 'ORDEN' : 'INSTRUCCIÓN';
+  
+  return `**${prefijo} ${fechaCorta} ${letra}** ${tipoOp}`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// ENVIAR EMAIL CONSOLIDADO PARA CRUCES (una sola tabla, ambas patas)
+// ═══════════════════════════════════════════════════════════
+async function enviarEmailCruce(rows, corredora) {
+  const token = await getOutlookToken();
+  if (!token) return { ok:false, msg:'No autenticado en Outlook' };
+  
+  const corrKey = (corredora||'').toUpperCase().trim();
+  let destino = corredorasConfig[corrKey];
+  if (!destino) {
+    const keys = Object.keys(corredorasConfig);
+    const partial = keys.find(k => k.includes(corrKey) || corrKey.includes(k));
+    if (partial) destino = corredorasConfig[partial];
+  }
+  if (!destino) return { ok:false, msg: `Sin email para "${corredora}"` };
+
+  // Construir subject usando la primera row (todas comparten fecha)
+  const subj = await construirSubject({...rows[0], esCruce: true}, 'orden');
+  
+  // Si todas las rows comparten letra_op, persistirla
+  const letraSubj = subj.match(/\*\*ORDEN[^*]*\s+([A-Z]+)\*\*/)?.[1];
+  if (letraSubj) {
+    for (const r of rows) {
+      try { await SB.from('ordenes').update({letra_op: letraSubj}).eq('id', r.id); } catch(e){}
+    }
+  }
+
+  const userName = CURRENT_USER?.nombre?.split(' ')[0] || '';
+  const contactName = (destino.split('@')[0]||'').split('.')[0];
+  const saludo = contactName ? `Hola ${contactName.charAt(0).toUpperCase()+contactName.slice(1)},` : 'Hola,';
+  
+  const tableRows = rows.map(r => `
+    <tr>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.fecha}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;color:${r.operacion==='COMPRA'?'#1a7f37':'#cf222e'};font-weight:600">${r.operacion}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.corredora||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${r.cta||'0'}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.moneda||'CLP'}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.rut||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.cliente||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">${r.cantidad ? Number(r.cantidad).toLocaleString('es-CL') : ''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.nemo||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${r.condicion||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">$ ${r.precio ? Number(r.precio).toLocaleString('es-CL', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—'}</td>
+    </tr>`).join('');
+
+  const htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
+    <p style="margin:0 0 16px">${saludo}</p>
+    <p style="margin:0 0 16px">Por Favor Ingresar el siguiente cruce:</p>
+    <table style="border-collapse:collapse;width:100%;max-width:900px">
+      <thead>
+        <tr style="background:#1f3a5f;color:#fff">
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fecha</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Operación</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Corredora</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cta.</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Moneda</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Rut</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Cantidad</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Nemo</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Condición</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Precio</th>
+        </tr>
+      </thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+    <p style="margin:24px 0 0">Saludos,</p>
+    ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
+  </body></html>`;
+
+  // CC: banker + clientes con email_ok que estén en las patas y necesiten OK
+  const ccList = [];
+  const seen = new Set();
+  if (CURRENT_USER?.email && CURRENT_USER.email !== destino) {
+    ccList.push({emailAddress:{address:CURRENT_USER.email}});
+    seen.add(CURRENT_USER.email.toLowerCase());
+  }
+  for (const r of rows) {
+    const cli = DB_CLIENTES.find(c => c.rut === r.rut);
+    if (cli?.necesita_ok && cli?.email_ok && !seen.has(cli.email_ok.toLowerCase())) {
+      ccList.push({emailAddress:{address: cli.email_ok}});
+      seen.add(cli.email_ok.toLowerCase());
+    }
+  }
+
+  const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method:'POST',
+    headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
+    body: JSON.stringify({
+      message:{
+        subject: subj,
+        body:{contentType:'HTML',content:htmlBody},
+        toRecipients:[{emailAddress:{address:destino}}],
+        ccRecipients: ccList
+      },
+      saveToSentItems:true
+    })
+  });
+  if (r.ok||r.status===202) return {ok:true};
+  const err=await r.json().catch(()=>({}));
+  return {ok:false, msg:err.error?.message||`HTTP ${r.status}`};
+}
+
+// ═══════════════════════════════════════════════════════════
+// ENVIAR EMAIL CONSOLIDADO PARA MÚLTIPLES OPERACIONES (mismo corredor)
+// ═══════════════════════════════════════════════════════════
+async function enviarEmailMultiple(rows, corredora) {
+  const token = await getOutlookToken();
+  if (!token) return { ok:false, msg:'No autenticado en Outlook' };
+  
+  const corrKey = (corredora||'').toUpperCase().trim();
+  let destino = corredorasConfig[corrKey];
+  if (!destino) {
+    const keys = Object.keys(corredorasConfig);
+    const partial = keys.find(k => k.includes(corrKey) || corrKey.includes(k));
+    if (partial) destino = corredorasConfig[partial];
+  }
+  if (!destino) return { ok:false, msg: `Sin email para "${corredora}"` };
+
+  const fecha = rows[0]?.fecha || todayStr();
+  const [yyyy,mm,dd] = fecha.split('-');
+  const fechaCorta = `${dd}-${mm}`;
+  
+  // Letra: usar la mayor letra entre las rows (la última operación del bloque)
+  let maxCount = 0;
+  try {
+    const { data } = await SB.from('ordenes').select('id').eq('fecha', fecha).order('id', {ascending:true});
+    for (const r of rows) {
+      const idx = (data||[]).findIndex(d => d.id === r.id);
+      if (idx >= 0 && idx+1 > maxCount) maxCount = idx+1;
+    }
+  } catch(e){}
+  const letraInicial = numeroALetra(Math.max(1, maxCount - rows.length + 1));
+  const letraFinal = numeroALetra(Math.max(1, maxCount));
+  const rangoLetras = letraInicial === letraFinal ? letraInicial : `${letraInicial}-${letraFinal}`;
+  
+  const subj = `**ORDEN ${fechaCorta} ${rangoLetras}** Múltiples operaciones`;
+  
+  // Persistir letras correlativas
+  try {
+    const { data } = await SB.from('ordenes').select('id').eq('fecha', fecha).order('id', {ascending:true});
+    for (const r of rows) {
+      const idx = (data||[]).findIndex(d => d.id === r.id);
+      if (idx >= 0) {
+        await SB.from('ordenes').update({letra_op: numeroALetra(idx+1)}).eq('id', r.id);
+      }
+    }
+  } catch(e){}
+
+  const userName = CURRENT_USER?.nombre?.split(' ')[0] || '';
+  const contactName = (destino.split('@')[0]||'').split('.')[0];
+  const saludo = contactName ? `Hola ${contactName.charAt(0).toUpperCase()+contactName.slice(1)},` : 'Hola,';
+  
+  const tableRows = rows.map(r => `
+    <tr>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.fecha}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;color:${r.operacion==='COMPRA'?'#1a7f37':'#cf222e'};font-weight:600">${r.operacion}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.corredora||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${r.cta||'0'}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.moneda||'CLP'}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.rut||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.cliente||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">${r.cantidad ? Number(r.cantidad).toLocaleString('es-CL') : ''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${r.nemo||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${r.condicion||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">$ ${r.precio ? Number(r.precio).toLocaleString('es-CL', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—'}</td>
+    </tr>`).join('');
+
+  const htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
+    <p style="margin:0 0 16px">${saludo}</p>
+    <p style="margin:0 0 16px">Por Favor Ingresar las siguientes operaciones:</p>
+    <table style="border-collapse:collapse;width:100%;max-width:900px">
+      <thead>
+        <tr style="background:#1f3a5f;color:#fff">
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fecha</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Operación</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Corredora</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cta.</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Moneda</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Rut</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Cantidad</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Nemo</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Condición</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Precio</th>
+        </tr>
+      </thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+    <p style="margin:24px 0 0">Saludos,</p>
+    ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
+  </body></html>`;
+
+  // CC: banker + clientes con email_ok que necesiten OK
+  const ccList = [];
+  const seen = new Set();
+  if (CURRENT_USER?.email && CURRENT_USER.email !== destino) {
+    ccList.push({emailAddress:{address:CURRENT_USER.email}});
+    seen.add(CURRENT_USER.email.toLowerCase());
+  }
+  for (const r of rows) {
+    const cli = DB_CLIENTES.find(c => c.rut === r.rut);
+    if (cli?.necesita_ok && cli?.email_ok && !seen.has(cli.email_ok.toLowerCase())) {
+      ccList.push({emailAddress:{address: cli.email_ok}});
+      seen.add(cli.email_ok.toLowerCase());
+    }
+  }
+
+  const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method:'POST',
+    headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
+    body: JSON.stringify({
+      message:{
+        subject: subj,
+        body:{contentType:'HTML',content:htmlBody},
+        toRecipients:[{emailAddress:{address:destino}}],
+        ccRecipients: ccList
+      },
+      saveToSentItems:true
+    })
+  });
+  if (r.ok||r.status===202) return {ok:true};
+  const err=await r.json().catch(()=>({}));
+  return {ok:false, msg:err.error?.message||`HTTP ${r.status}`};
+}
+
 async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
   const token = await getOutlookToken();
   if (!token) return { ok:false, msg:'No autenticado en Outlook' };
@@ -1944,9 +2241,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
     </div>
   </div></body></html>`;
   
-  const subj = tipo==='orden'
-    ? `[${datos.operacion}] ${datos.nemo||''} · ${datos.cliente} · ${datos.fecha}`
-    : `[${datos.instruccion||'INSTRUCCIÓN'}] ${datos.cliente} · ${datos.fecha}`;
+  const subj = await construirSubject(datos, tipo);
   
   // Build CC list: add banker's own email as copy
   const ccList = [];
@@ -4301,6 +4596,8 @@ async function confirmarPendingOrder() {
   if (p.type === 'bloque') {
     // Ejecutar todas las órdenes del bloque
     let guardadas = 0, fallidas = 0;
+    const filasGuardadas = []; // para email consolidado por corredora
+    const aportesGuardados = [];
     for (const o of p.ordenes) {
       try {
         if (o.type === 'orden') {
@@ -4318,11 +4615,7 @@ async function confirmarPendingOrder() {
             if (!error) {
               guardadas++;
               trackUso(o.nemo, cli.nombre);
-              const corrEmail = corredorasConfig[(o.corredora||'').toUpperCase()];
-              if (corrEmail && outlookAccount && data) {
-                const r = await enviarEmailOutlook(data,'orden').catch(()=>({ok:false}));
-                if (r.ok) await SB.from('ordenes').update({email_enviado:true}).eq('id',data.id);
-              }
+              if (data) filasGuardadas.push(data);
             } else { fallidas++; }
           }
         } else if (o.type === 'aporte') {
@@ -4333,12 +4626,41 @@ async function confirmarPendingOrder() {
             fondo_mutuo:o.fondo||'', serie:o.serie||'',
             forma_pago:o.formaPago||'', email_enviado:false, ejecutado_por:executor
           };
-          const {error} = await SB.from('aportes').insert(row);
-          if (!error) guardadas++; else fallidas++;
+          const {data, error} = await SB.from('aportes').insert(row).select().single();
+          if (!error) { guardadas++; if (data) aportesGuardados.push(data); }
+          else fallidas++;
         }
       } catch(e) { fallidas++; }
     }
-    botMsg(`✅ Bloque guardado — ${guardadas} operaciones${fallidas?' · '+fallidas+' fallidas':''}`);
+    
+    // Enviar email consolidado por corredora
+    let emailsMsg = '';
+    if (outlookAccount && filasGuardadas.length) {
+      const porCorredora = {};
+      for (const row of filasGuardadas) {
+        const k = (row.corredora||'').toUpperCase();
+        if (!k || !corredorasConfig[k]) continue;
+        (porCorredora[k] = porCorredora[k] || []).push(row);
+      }
+      const enviados = [];
+      for (const [corr, rows] of Object.entries(porCorredora)) {
+        if (rows.length === 1) {
+          // una sola → email normal
+          const r = await enviarEmailOutlook(rows[0],'orden').catch(()=>({ok:false}));
+          if (r.ok) { await SB.from('ordenes').update({email_enviado:true}).eq('id',rows[0].id); enviados.push(corr); }
+        } else {
+          // varias mismo corredor → consolidado
+          const r = await enviarEmailMultiple(rows, corr).catch(()=>({ok:false}));
+          if (r.ok) {
+            for (const row of rows) await SB.from('ordenes').update({email_enviado:true}).eq('id',row.id);
+            enviados.push(`${corr} (${rows.length})`);
+          }
+        }
+      }
+      if (enviados.length) emailsMsg = ` · ✉ ${enviados.join(', ')}`;
+    }
+    
+    botMsg(`✅ Bloque guardado — ${guardadas} operaciones${fallidas?' · '+fallidas+' fallidas':''}${emailsMsg}`);
     if (isActive('ordenes')) await cargarOrdenes();
     else showSection('ordenes', document.querySelector('.nav-item'));
 
@@ -4431,18 +4753,19 @@ async function confirmarPendingOrder() {
     const { data: rows, error: eIns } = await SB.from('ordenes').insert(inserts).select();
     if (eIns) { botMsg(`❌ Error: ${eIns.message}`); return; }
 
-    // Send email if corredora configured
+    // Send ONE consolidated email for the whole cruce
     let emailMsg = '';
     const corrEmail = corredorasConfig[(p.corredora||'').toUpperCase()];
     if (corrEmail && outlookAccount) {
-      // Send one consolidated email per side
-      let allSent = true;
-      for (const row of rows) {
-        const r = await enviarEmailOutlook(row, 'orden').catch(()=>({ok:false}));
-        if (r.ok) await SB.from('ordenes').update({email_enviado:true}).eq('id',row.id);
-        else allSent = false;
+      const r = await enviarEmailCruce(rows, p.corredora).catch(e=>({ok:false,msg:e.message}));
+      if (r.ok) {
+        for (const row of rows) await SB.from('ordenes').update({email_enviado:true}).eq('id',row.id);
+        emailMsg = ` · ✉ email de cruce enviado a ${p.corredora}`;
+      } else {
+        emailMsg = ` · email falló: ${r.msg}`;
       }
-      emailMsg = allSent ? ` · ✉ emails enviados a ${p.corredora}` : ' · algunos emails fallaron';
+    } else if (corrEmail && !outlookAccount) {
+      emailMsg = ' · (conectá Outlook para enviar email)';
     }
 
     const nLegs = inserts.length;
@@ -5143,18 +5466,92 @@ async function guardarOrden() {
     cantidad:val('f-cantidad')||null,nemo:val('f-nemo'),
     condicion:val('f-cond'),precio:val('f-precio')||null,
     comision:val('f-comision')||null,email_enviado:false,
-    ejecutado_por:executor
+    ejecutado_por:executor,
+    necesita_ok:false,ok_recibido:false
   };
+  
   await autoGuardarCliente(rut,cliente,row.cta,corredora);
+  
+  // Verificar si sabemos si este cliente necesita OK
+  const conoceOK = necesitaOK(cliente);
+  
+  if (conoceOK === null && enviar) {
+    // No sabemos y se quiere enviar email, hay que preguntar
+    botMsg(`❓ <strong>${cliente}</strong> necesita dar OK para que se copie la operación?`);
+    
+    // Crear interfaz para responder
+    const chatContainer = document.getElementById('chat');
+    const buttonsDiv = document.createElement('div');
+    buttonsDiv.style.cssText = 'display:flex;gap:8px;margin:8px 0;padding:0 12px';
+    buttonsDiv.id = 'ok-decision-buttons';
+    
+    const btnSi = document.createElement('button');
+    btnSi.textContent = '✓ Sí, necesita OK';
+    btnSi.style.cssText = 'flex:1;padding:10px;background:var(--venta);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-weight:600;font-size:12px;transition:opacity .15s';
+    btnSi.onmouseover = () => btnSi.style.opacity = '.85';
+    btnSi.onmouseout = () => btnSi.style.opacity = '1';
+    
+    const btnNo = document.createElement('button');
+    btnNo.textContent = '✗ No, copiar directo';
+    btnNo.style.cssText = 'flex:1;padding:10px;background:var(--info);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-weight:600;font-size:12px;transition:opacity .15s';
+    btnNo.onmouseover = () => btnNo.style.opacity = '.85';
+    btnNo.onmouseout = () => btnNo.style.opacity = '1';
+    
+    btnSi.onclick = async () => {
+      aprenderOK(cliente, true);
+      row.necesita_ok = true;
+      document.getElementById('ok-decision-buttons')?.remove();
+      await procesarGuardarOrdenFinal(row, cliente, corredora, executor, enviar);
+    };
+    
+    btnNo.onclick = async () => {
+      aprenderOK(cliente, false);
+      row.necesita_ok = false;
+      document.getElementById('ok-decision-buttons')?.remove();
+      await procesarGuardarOrdenFinal(row, cliente, corredora, executor, enviar);
+    };
+    
+    buttonsDiv.appendChild(btnSi);
+    buttonsDiv.appendChild(btnNo);
+    chatContainer.appendChild(buttonsDiv);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+    
+  } else {
+    // Ya sabemos o no se requiere envío
+    if (conoceOK !== null) {
+      row.necesita_ok = conoceOK;
+    }
+    await procesarGuardarOrdenFinal(row, cliente, corredora, executor, enviar);
+  }
+}
+
+async function procesarGuardarOrdenFinal(row, cliente, corredora, executor, enviar) {
   const{data,error}=await SB.from('ordenes').insert(row).select().single();
   if(error){msg('o-msg','Error: '+error.message,false);return;}
+  
+  let mensaje = `✓ <strong>${row.operacion}</strong> guardada: ${cliente} · ${row.nemo} · ${row.cantidad}`;
+  
   if(enviar){
     if(!outlookAccount){msg('o-msg','Conectá Outlook primero',false);return;}
-    const r=await enviarEmailOutlook(data,'orden').catch(e=>({ok:false,msg:e.message}));
-    if(r.ok){await SB.from('ordenes').update({email_enviado:true}).eq('id',data.id);msg('o-msg',`✓ Guardada · Email enviado a ${corredora}`);}
-    else{msg('o-msg',`Guardada · Email falló: ${r.msg}`,false);}
-  } else {msg('o-msg','✓ Orden guardada');}
+    
+    if (row.necesita_ok) {
+      mensaje += '<br>📋 Esperando OK del cliente para enviar email';
+      await SB.from('ordenes').update({email_enviado:false}).eq('id',data.id);
+    } else {
+      const r=await enviarEmailOutlook(data,'orden').catch(e=>({ok:false,msg:e.message}));
+      if(r.ok){
+        mensaje += '<br>✉ Email enviado a '+corredora;
+        await SB.from('ordenes').update({email_enviado:true}).eq('id',data.id);
+      } else {
+        mensaje += '<br>⚠ Email falló: '+r.msg;
+      }
+    }
+  }
+  
+  msg('o-msg', mensaje.replace(/<br>/g, ' · '));
+  botMsg(mensaje);
   limpiarOrden();
+  await cargarOrdenes();
 }
 async function guardarAporte() {
   const rut=val('a-rut'),cliente=val('a-cliente');
@@ -5167,17 +5564,89 @@ async function guardarAporte() {
     instruccion:val('a-inst'),monto:val('a-monto')||null,
     fondo_mutuo:val('a-fondo'),serie:val('a-serie'),
     forma_pago:val('a-forma'),email_enviado:false,
-    ejecutado_por:executor
+    ejecutado_por:executor,
+    necesita_ok:false,ok_recibido:false
   };
   await autoGuardarCliente(rut,cliente,row.cta,null);
+  
+  // Verificar si sabemos si este cliente necesita OK
+  const conoceOK = necesitaOK(cliente);
+  
+  if (conoceOK === null && enviar && emailDest) {
+    // No sabemos y se quiere enviar email, hay que preguntar
+    botMsg(`❓ <strong>${cliente}</strong> necesita dar OK para que se copie el aporte?`);
+    
+    // Crear interfaz para responder
+    const chatContainer = document.getElementById('chat');
+    const buttonsDiv = document.createElement('div');
+    buttonsDiv.style.cssText = 'display:flex;gap:8px;margin:8px 0;padding:0 12px';
+    buttonsDiv.id = 'ok-decision-buttons';
+    
+    const btnSi = document.createElement('button');
+    btnSi.textContent = '✓ Sí, necesita OK';
+    btnSi.style.cssText = 'flex:1;padding:10px;background:var(--venta);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-weight:600;font-size:12px;transition:opacity .15s';
+    btnSi.onmouseover = () => btnSi.style.opacity = '.85';
+    btnSi.onmouseout = () => btnSi.style.opacity = '1';
+    
+    const btnNo = document.createElement('button');
+    btnNo.textContent = '✗ No, copiar directo';
+    btnNo.style.cssText = 'flex:1;padding:10px;background:var(--info);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-weight:600;font-size:12px;transition:opacity .15s';
+    btnNo.onmouseover = () => btnNo.style.opacity = '.85';
+    btnNo.onmouseout = () => btnNo.style.opacity = '1';
+    
+    btnSi.onclick = async () => {
+      aprenderOK(cliente, true);
+      row.necesita_ok = true;
+      document.getElementById('ok-decision-buttons')?.remove();
+      await procesarGuardarAporteFinal(row, cliente, emailDest, executor, enviar);
+    };
+    
+    btnNo.onclick = async () => {
+      aprenderOK(cliente, false);
+      row.necesita_ok = false;
+      document.getElementById('ok-decision-buttons')?.remove();
+      await procesarGuardarAporteFinal(row, cliente, emailDest, executor, enviar);
+    };
+    
+    buttonsDiv.appendChild(btnSi);
+    buttonsDiv.appendChild(btnNo);
+    chatContainer.appendChild(buttonsDiv);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+    
+  } else {
+    // Ya sabemos o no se requiere envío
+    if (conoceOK !== null) {
+      row.necesita_ok = conoceOK;
+    }
+    await procesarGuardarAporteFinal(row, cliente, emailDest, executor, enviar);
+  }
+}
+
+async function procesarGuardarAporteFinal(row, cliente, emailDest, executor, enviar) {
   const{data,error}=await SB.from('aportes').insert(row).select().single();
   if(error){msg('a-msg','Error: '+error.message,false);return;}
-  if(enviar&&emailDest&&outlookAccount){
-    const r=await enviarEmailOutlook(data,'aporte',emailDest).catch(e=>({ok:false,msg:e.message}));
-    if(r.ok){await SB.from('aportes').update({email_enviado:true}).eq('id',data.id);msg('a-msg','✓ Guardado · Email enviado');}
-    else{msg('a-msg','Guardado · Email falló: '+r.msg,false);}
-  } else {msg('a-msg','✓ Aporte guardado');}
-  limpiarAporte();await cargarAportes();
+  
+  let mensaje = `✓ <strong>Aporte</strong> guardado: ${cliente} · ${row.monto}`;
+  
+  if(enviar && emailDest && outlookAccount){
+    if (row.necesita_ok) {
+      mensaje += '<br>📋 Esperando OK del cliente para enviar email';
+      await SB.from('aportes').update({email_enviado:false}).eq('id',data.id);
+    } else {
+      const r=await enviarEmailOutlook(data,'aporte',emailDest).catch(e=>({ok:false,msg:e.message}));
+      if(r.ok){
+        mensaje += '<br>✉ Email enviado';
+        await SB.from('aportes').update({email_enviado:true}).eq('id',data.id);
+      } else {
+        mensaje += '<br>⚠ Email falló: '+r.msg;
+      }
+    }
+  }
+  
+  msg('a-msg', mensaje.replace(/<br>/g, ' · '));
+  botMsg(mensaje);
+  limpiarAporte();
+  await cargarAportes();
 }
 async function guardarSaldo() {
   const rut=val('s-rut'),razon=val('s-razon');
@@ -5235,6 +5704,40 @@ function limpiarSaldo() {
   ['s-rut','s-razon','s-cta','s-agente','s-saldo','s-inst'].forEach(id=>{const el=document.getElementById(id);if(el){el.value='';el.classList.remove('filled');}});
   document.getElementById('s-cta-pills').innerHTML='';ctaSel.saldos=null;
 }
+
+// ── SISTEMA DE APRENDIZAJE DE OK DE CLIENTES ──
+let clientesOK = {}; // {clienteNombre: bool}
+const OK_STORAGE_KEY = 'blotter_clientes_ok';
+
+function cargarClientesOK() {
+  const stored = localStorage.getItem(OK_STORAGE_KEY);
+  if (stored) {
+    try {
+      clientesOK = JSON.parse(stored);
+    } catch(e) {
+      clientesOK = {};
+    }
+  }
+}
+
+function guardarClientesOK() {
+  localStorage.setItem(OK_STORAGE_KEY, JSON.stringify(clientesOK));
+}
+
+function necesitaOK(nombreCliente) {
+  // Si ya sabemos que este cliente necesita OK, retorna true
+  // Si ya sabemos que no necesita, retorna false
+  // Si no sabemos, retorna null (hay que preguntar)
+  return clientesOK[nombreCliente] ?? null;
+}
+
+function aprenderOK(nombreCliente, necesitaOk) {
+  clientesOK[nombreCliente] = necesitaOk;
+  guardarClientesOK();
+}
+
+// Cargar al iniciar
+cargarClientesOK();
 
 // ── MODAL CLIENTE ──
 function abrirModal() {
