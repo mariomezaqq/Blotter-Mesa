@@ -5913,8 +5913,12 @@ function necesitaOK(rutCliente) {
   if (!rutCliente) return null;
   const c = DB_CLIENTES.find(x => x.rut === rutCliente);
   if (!c) return null;
-  // Si tiene flag explícito en BD, usarlo
-  if (typeof c.necesita_ok === 'boolean') return c.necesita_ok;
+  // Cliente nunca preguntado → null (preguntar)
+  // Cliente que necesita OK pero sin email guardado → null (preguntar para capturar email)
+  // Cliente con necesita_ok=true y con email → true
+  // Cliente con necesita_ok=false explícito → false
+  if (c.necesita_ok === true && c.email_ok) return true;
+  if (c.necesita_ok === false) return false;
   return null;
 }
 
