@@ -2201,49 +2201,91 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
   }
   if (!destino) return { ok:false, msg: 'Sin email de destino' };
   
-  const colorOp = datos.operacion==='COMPRA'||datos.instruccion ? '#4ade80' : '#f87171';
-  const bgOp    = datos.operacion==='COMPRA'||datos.instruccion ? '#0f2d1a' : '#3d1515';
-  const titulo  = datos.instruccion ? datos.instruccion : datos.operacion;
+  // ¿El cliente necesita OK?
+  const necesitaOkFlag = datos.necesita_ok === true 
+    || DB_CLIENTES.find(c => c.rut === datos.rut)?.necesita_ok === true;
+  const emailCliente = DB_CLIENTES.find(c => c.rut === datos.rut)?.email_ok || null;
   
-  const rows = tipo==='orden' ? [
-    ['Fecha',datos.fecha],['Cliente',datos.cliente],['RUT',datos.rut],
-    ['Cuenta',datos.cta||'—'],['Nemo',datos.nemo||'—'],
-    ['Cantidad',datos.cantidad ? Number(datos.cantidad).toLocaleString('es-CL') : '—'],
-    ['Precio',datos.precio ? Number(datos.precio).toLocaleString('es-CL') : '—'],
-    ['Condición',datos.condicion||'—'],['Moneda',datos.moneda],
-    datos.comision?['Comisión',datos.comision]:null,
-    datos.ejecutado_por?['Ejecutó',datos.ejecutado_por]:null,
-  ].filter(Boolean) : [
-    ['Fecha',datos.fecha],['Cliente',datos.cliente],['RUT',datos.rut],
-    ['Instrucción',datos.instruccion||'—'],['Fondo',datos.fondo_mutuo||'—'],
-    ['Serie',datos.serie||'—'],
-    ['Monto',datos.monto ? '$'+Number(datos.monto).toLocaleString('es-CL') : '—'],
-    ['Forma de pago',datos.forma_pago||'—'],
-    datos.ejecutado_por?['Ejecutó',datos.ejecutado_por]:null,
-  ].filter(Boolean);
+  // Construir tabla profesional estilo Outlook
+  const tableRow = `
+    <tr>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.fecha}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;color:${datos.operacion==='COMPRA'?'#1a7f37':'#cf222e'};font-weight:600">${datos.operacion || datos.instruccion || ''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.corredora||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.cta||'0'}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.moneda||'CLP'}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.rut||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.cliente||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">${datos.cantidad ? Number(datos.cantidad).toLocaleString('es-CL') : ''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.nemo||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.condicion||''}</td>
+      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">$ ${datos.precio ? Number(datos.precio).toLocaleString('es-CL', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—'}</td>
+    </tr>`;
   
-  const htmlBody = `<html><body style="font-family:Arial,sans-serif;background:#0d0f0e;padding:24px">
-  <div style="max-width:520px;margin:0 auto;background:#131615;border-radius:10px;overflow:hidden;border:1px solid #252927">
-    <div style="background:${bgOp};padding:14px 22px;border-bottom:1px solid #252927">
-      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:${colorOp};font-family:monospace">Instrucción · Mesa de Dinero</div>
-      <div style="font-size:22px;font-weight:700;color:${colorOp};margin-top:3px;font-family:monospace">${titulo}</div>
-    </div>
-    <div style="padding:18px 22px">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        ${rows.map(([k,v])=>`<tr><td style="padding:5px 0;color:#7a8a7c;width:120px">${k}</td><td style="padding:5px 0;font-weight:500;color:#e8ede9;font-family:monospace">${v}</td></tr>`).join('')}
-      </table>
-    </div>
-    <div style="padding:10px 22px;background:#1a1d1c;border-top:1px solid #252927;font-size:10px;color:#3d4a3f;font-family:monospace">
-      Blotter Mesa de Dinero · ${new Date().toLocaleString('es-CL')}
-    </div>
-  </div></body></html>`;
+  const tableHtml = `<table style="border-collapse:collapse;width:100%;max-width:900px">
+    <thead>
+      <tr style="background:#1f3a5f;color:#fff">
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fecha</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Operación</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Corredora</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cta.</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Moneda</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Rut</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Cantidad</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Nemo</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Condición</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Precio</th>
+      </tr>
+    </thead>
+    <tbody>${tableRow}</tbody>
+  </table>`;
+  
+  const userName = CURRENT_USER?.nombre?.split(' ')[0] || '';
+  const primerNombreCliente = (datos.cliente||'').split(/\s+/)[0] || '';
+  const contactName = (destino.split('@')[0]||'').split('.')[0];
+  
+  let htmlBody;
+  if (necesitaOkFlag && emailCliente) {
+    // Dirigido al cliente para que dé OK; corredora en CC
+    htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
+      <p style="margin:0 0 16px">Hola ${primerNombreCliente.charAt(0).toUpperCase()+primerNombreCliente.slice(1).toLowerCase()},</p>
+      <p style="margin:0 0 16px">Favor dar ok a la siguiente operación:</p>
+      ${tableHtml}
+      <p style="margin:24px 0 0">Saludos,</p>
+      ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
+    </body></html>`;
+  } else {
+    // Dirigido a la corredora normal
+    const saludo = contactName ? `Hola ${contactName.charAt(0).toUpperCase()+contactName.slice(1)},` : 'Hola,';
+    htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
+      <p style="margin:0 0 16px">${saludo}</p>
+      <p style="margin:0 0 16px">Por Favor Ingresar la siguiente operación:</p>
+      ${tableHtml}
+      <p style="margin:24px 0 0">Saludos,</p>
+      ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
+    </body></html>`;
+  }
   
   const subj = await construirSubject(datos, tipo);
   
-  // Build CC list: add banker's own email as copy
+  // Build TO/CC list
+  let toAddress = destino;
   const ccList = [];
-  if (CURRENT_USER?.email && CURRENT_USER.email !== destino) {
+  const seen = new Set();
+  
+  if (necesitaOkFlag && emailCliente) {
+    // TO = cliente (debe dar OK), CC = corredora + banquero
+    toAddress = emailCliente;
+    if (destino && destino !== emailCliente) {
+      ccList.push({emailAddress:{address:destino}});
+      seen.add(destino.toLowerCase());
+    }
+  }
+  
+  if (CURRENT_USER?.email && CURRENT_USER.email !== toAddress && !seen.has(CURRENT_USER.email.toLowerCase())) {
     ccList.push({emailAddress:{address:CURRENT_USER.email}});
+    seen.add(CURRENT_USER.email.toLowerCase());
   }
 
   const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
@@ -2253,19 +2295,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
       message:{
         subject:subj,
         body:{contentType:'HTML',content:htmlBody},
-        toRecipients:[{emailAddress:{address:destino}}],
-        ccRecipients: ccList
-      },
-      saveToSentItems:true
-    })
-  });
-  if (r.ok||r.status===202) return {ok:true};
-  const err=await r.json().catch(()=>({}));
-  return {ok:false, msg:err.error?.message||`HTTP ${r.status}`};
-}
-
-// ═══════════════════════════════════════════════════════════
-// DATA LOAD
+        toRecipients:[{emailAddress:{address:toAddress}}],
 // ═══════════════════════════════════════════════════════════
 async function cargarClientes() {
   const { data } = await SB.from('clientes').select('*, cuentas(*)').order('nombre');
@@ -2977,6 +3007,38 @@ function tryCorrectionInline(tl, order) {
 // ═══════════════════════════════════════════════════════════
 
 // "100 palos", "5 millones", "5M", "500k", "1000 cuotas", "3000" → number
+// Parse de precios — soporta decimales con coma o punto
+// "1055,05" → 1055.05  ·  "1055.05" → 1055.05  ·  "1.055,05" → 1055.05  ·  "9200" → 9200
+function parsePrecio(text) {
+  if (!text) return null;
+  const t = String(text).trim().replace(/[^\d.,]/g,'');
+  if (!t) return null;
+  
+  const hasComa  = t.includes(',');
+  const hasPunto = t.includes('.');
+  
+  // Caso 1: "1.055,05" → punto = miles, coma = decimal
+  if (hasComa && hasPunto) {
+    return parseFloat(t.replace(/\./g,'').replace(',','.'));
+  }
+  // Caso 2: "1055,05" → coma decimal
+  if (hasComa) {
+    return parseFloat(t.replace(',','.'));
+  }
+  // Caso 3: "1055.05" → punto puede ser decimal o miles
+  if (hasPunto) {
+    const partes = t.split('.');
+    // Si el último grupo tiene 1-2 dígitos → es decimal
+    // Si tiene 3 dígitos exactos → es miles
+    if (partes.length === 2 && partes[1].length <= 2) {
+      return parseFloat(t);
+    }
+    return parseFloat(t.replace(/\./g,''));
+  }
+  // Caso 4: solo dígitos
+  return parseFloat(t);
+}
+
 function parseMontoNatural(text) {
   if (!text) return null;
   const t = String(text).toLowerCase().trim();
@@ -3604,6 +3666,22 @@ function checkMissingAndConfirm(parsed) {
     }
   }
 
+  // Cantidad obligatoria para órdenes
+  if (parsed.type === 'orden' && (!parsed.cantidad || Number(parsed.cantidad) <= 0)) {
+    chatContext = {state:'await_missing_field', field:'cantidad', parsed};
+    const isFondo = /^CF[IM]/.test(parsed.nemo||'');
+    botMsg(`¿Cuál es la <strong>cantidad</strong> de ${isFondo?'cuotas':'acciones'}? (ej: <em>1000</em>, <em>20 palos</em>)`);
+    return;
+  }
+
+  // Precio obligatorio para órdenes
+  if (parsed.type === 'orden' && (!parsed.precio || Number(parsed.precio) <= 0)) {
+    chatContext = {state:'await_missing_field', field:'precio', parsed};
+    const isFondo = /^CF[IM]/.test(parsed.nemo||'');
+    botMsg(`¿Cuál es el <strong>${isFondo?'valor cuota':'precio'}</strong>? (ej: <em>1055.05</em>, <em>9200</em>)`);
+    return;
+  }
+
   pendingOrder = parsed;
   chatContext  = {state:'await_confirm'};
   showParsedConfirm(parsed);
@@ -3814,7 +3892,7 @@ function handleMissingField(text) {
     }
     case 'nombre':  parsed.cliente  = text.trim().toUpperCase(); break;
     case 'nemo':    parsed.nemo     = text.trim().toUpperCase(); parsed.nemoResult={resolved:parsed.nemo,exact:true}; break;
-    case 'precio':    parsed.precio    = parseMontoNatural(text); break;
+    case 'precio':    parsed.precio    = parsePrecio(text); break;
     case 'cantidad':  parsed.cantidad  = parseMontoNatural(text); break;
     case 'cta':       parsed.cta      = text.trim(); break;
     case 'corredora': parsed.corredora = text.trim().toUpperCase(); break;
@@ -4727,6 +4805,8 @@ async function confirmarPendingOrder() {
     if (!p.cta)       missing.push('cuenta');
     if (!p.corredora) missing.push('corredora');
     if (!p.condicion) missing.push('condición (PH, PM o CN)');
+    if (!p.cantidad || Number(p.cantidad) <= 0) missing.push('cantidad (cuotas/acciones)');
+    if (!p.precio   || Number(p.precio)   <= 0) missing.push('precio (valor cuota)');
     if (missing.length) {
       // Re-enter validation flow instead of saving
       botMsg(`⚠ Faltan campos: <strong>${missing.join(', ')}</strong>. Completalos antes de confirmar.`);
@@ -4756,23 +4836,54 @@ async function confirmarPendingOrder() {
     const {data,error} = await SB.from('ordenes').insert(row).select().single();
     if (error) { botMsg(`❌ Error: ${error.message}`); return; }
 
-    let emailMsg = '';
     const corrEmail = corredorasConfig[(p.corredora||'').toUpperCase()];
-    if (corrEmail && outlookAccount) {
+    
+    // Si no hay corredora configurada o Outlook no conectado, terminamos acá
+    if (!corrEmail || !outlookAccount) {
+      const aviso = !corrEmail ? '' : ' · (conectá Outlook para enviar email)';
+      botMsg(`✅ Orden guardada${aviso}`);
+      trackUso(p.nemo, p.cliente);
+      if (isActive('ordenes')) await cargarOrdenes();
+      else showSection('ordenes', document.querySelector('.nav-item'));
+      return;
+    }
+    
+    // ── Flujo de OK del cliente ──
+    const okStatus = necesitaOK(p.rut);
+    
+    const procederConEnvio = async (necesitaOk, emailOk) => {
+      // Marcar la orden con el flag
+      if (typeof necesitaOk === 'boolean') {
+        await SB.from('ordenes').update({necesita_ok: necesitaOk}).eq('id', data.id);
+        data.necesita_ok = necesitaOk;
+      }
+      
       const r = await enviarEmailOutlook(data,'orden').catch(e=>({ok:false,msg:e.message}));
+      let emailMsg = '';
       if (r.ok) {
         await SB.from('ordenes').update({email_enviado:true}).eq('id',data.id);
-        emailMsg = ` · ✉ email enviado a ${p.corredora}`;
+        emailMsg = necesitaOk 
+          ? ` · ✉ email enviado a ${p.corredora} (CC: ${p.cliente} para OK)`
+          : ` · ✉ email enviado a ${p.corredora}`;
       } else {
         emailMsg = ` · email falló: ${r.msg}`;
       }
-    } else if (corrEmail && !outlookAccount) {
-      emailMsg = ' · (conectá Outlook para enviar email)';
+      botMsg(`✅ Orden guardada${emailMsg}`);
+      trackUso(p.nemo, p.cliente);
+      if (isActive('ordenes')) await cargarOrdenes();
+      else showSection('ordenes', document.querySelector('.nav-item'));
+    };
+    
+    if (okStatus === null) {
+      // No sabemos → preguntar
+      preguntarOKCliente(p.rut, p.cliente, async ({necesitaOk, emailOk}) => {
+        await procederConEnvio(necesitaOk, emailOk);
+      });
+    } else {
+      // Ya sabemos
+      await procederConEnvio(okStatus, emailOKCliente(p.rut));
     }
-    botMsg(`✅ Orden guardada${emailMsg}`);
-    trackUso(p.nemo, p.cliente);
-    if (isActive('ordenes')) await cargarOrdenes();
-    else showSection('ordenes', document.querySelector('.nav-item'));
+    return;
 
   } else if (p.type === 'cruce') {
     // Validate
@@ -4780,12 +4891,17 @@ async function confirmarPendingOrder() {
     if (!p.nemo)      missingC.push('nemo');
     if (!p.condicion) missingC.push('condición');
     if (!p.corredora) missingC.push('corredora');
+    if (!p.precio || Number(p.precio) <= 0) missingC.push('precio');
     if (!p.vendedores?.length)  missingC.push('vendedores');
     if (!p.compradores?.length) missingC.push('compradores');
     const sinRutV = p.vendedores.filter(x=>!x.rut).map(x=>x.nombre);
     const sinRutC = p.compradores.filter(x=>!x.rut).map(x=>x.nombre);
     if (sinRutV.length) missingC.push('RUT de: '+sinRutV.join(', '));
     if (sinRutC.length) missingC.push('RUT de: '+sinRutC.join(', '));
+    const sinCantV = p.vendedores.filter(x=>!x.cantidad || Number(x.cantidad)<=0).map(x=>x.nombre);
+    const sinCantC = p.compradores.filter(x=>!x.cantidad || Number(x.cantidad)<=0).map(x=>x.nombre);
+    if (sinCantV.length) missingC.push('cantidad de: '+sinCantV.join(', '));
+    if (sinCantC.length) missingC.push('cantidad de: '+sinCantC.join(', '));
     if (missingC.length) { botMsg(`⚠ Faltan: ${missingC.join(' · ')}`); return; }
 
     // Auto-register clients
@@ -5495,16 +5611,19 @@ async function guardarConfigCorredoras() {
 // SAVE OPERATIONS (from forms)
 // ═══════════════════════════════════════════════════════════
 async function autoGuardarCliente(rut, nombre, cta, corredora) {
+  // Validar cuenta: solo dígitos, descartar valores como PH, PM, CN
+  const ctaValida = cta && /^\d+$/.test(String(cta).trim()) ? String(cta).trim() : '';
+  
   const ex = DB_CLIENTES.find(c => c.rut === rut);
   if (ex) {
-    if (cta && !ex.cuentas.find(c => c.cta === cta)) {
-      await SB.from('cuentas').insert({cliente_id:ex.id, cta, corredora:corredora||''});
+    if (ctaValida && !ex.cuentas.find(c => c.cta === ctaValida)) {
+      await SB.from('cuentas').insert({cliente_id:ex.id, cta:ctaValida, corredora:corredora||''});
       await cargarClientes();
     }
     return;
   }
   const {data} = await SB.from('clientes').insert({rut, nombre, tipo:'persona'}).select().single();
-  if (data && cta) await SB.from('cuentas').insert({cliente_id:data.id, cta, corredora:corredora||''});
+  if (data && ctaValida) await SB.from('cuentas').insert({cliente_id:data.id, cta:ctaValida, corredora:corredora||''});
   await cargarClientes();
 }
 async function guardarOrden() {
@@ -5513,6 +5632,10 @@ async function guardarOrden() {
   if(!rut||!cliente){msg('o-msg','RUT y cliente son obligatorios',false);return;}
   if(!condForm){msg('o-msg','Seleccioná la condición (PH, PM o CN)',false);return;}
   const corredora=val('f-corredora');
+  if(!corredora){msg('o-msg','Corredora obligatoria',false);return;}
+  if(!val('f-nemo')){msg('o-msg','Nemo obligatorio',false);return;}
+  if(!val('f-cantidad') || Number(val('f-cantidad'))<=0){msg('o-msg','Cantidad obligatoria',false);return;}
+  if(!val('f-precio') || Number(val('f-precio'))<=0){msg('o-msg','Precio obligatorio',false);return;}
   const enviar=document.getElementById('chk-email').checked;
   const executor=CURRENT_USER?.nombre||'—';
   const row={
@@ -5760,39 +5883,92 @@ function limpiarSaldo() {
   document.getElementById('s-cta-pills').innerHTML='';ctaSel.saldos=null;
 }
 
-// ── SISTEMA DE APRENDIZAJE DE OK DE CLIENTES ──
-let clientesOK = {}; // {clienteNombre: bool}
-const OK_STORAGE_KEY = 'blotter_clientes_ok';
+// ── SISTEMA DE APRENDIZAJE DE OK DE CLIENTES (Supabase + caché) ──
+// Estado por cliente: 
+//   true  → necesita OK, copiar al cliente en email
+//   false → no necesita OK, mandar directo
+//   null  → no sabemos aún, preguntar al banquero
 
-function cargarClientesOK() {
-  const stored = localStorage.getItem(OK_STORAGE_KEY);
-  if (stored) {
-    try {
-      clientesOK = JSON.parse(stored);
-    } catch(e) {
-      clientesOK = {};
-    }
-  }
+function necesitaOK(rutCliente) {
+  if (!rutCliente) return null;
+  const c = DB_CLIENTES.find(x => x.rut === rutCliente);
+  if (!c) return null;
+  // Si tiene flag explícito en BD, usarlo
+  if (typeof c.necesita_ok === 'boolean') return c.necesita_ok;
+  return null;
 }
 
-function guardarClientesOK() {
-  localStorage.setItem(OK_STORAGE_KEY, JSON.stringify(clientesOK));
+function emailOKCliente(rutCliente) {
+  if (!rutCliente) return null;
+  const c = DB_CLIENTES.find(x => x.rut === rutCliente);
+  return c?.email_ok || null;
 }
 
-function necesitaOK(nombreCliente) {
-  // Si ya sabemos que este cliente necesita OK, retorna true
-  // Si ya sabemos que no necesita, retorna false
-  // Si no sabemos, retorna null (hay que preguntar)
-  return clientesOK[nombreCliente] ?? null;
+async function aprenderOK(rutCliente, necesitaOk, emailOk=null) {
+  if (!rutCliente) return;
+  const update = { necesita_ok: necesitaOk };
+  if (emailOk) update.email_ok = emailOk;
+  try {
+    await SB.from('clientes').update(update).eq('rut', rutCliente);
+    // Actualizar caché local
+    const c = DB_CLIENTES.find(x => x.rut === rutCliente);
+    if (c) { c.necesita_ok = necesitaOk; if (emailOk) c.email_ok = emailOk; }
+  } catch(e) { console.error('Error aprendiendo OK:', e); }
 }
 
-function aprenderOK(nombreCliente, necesitaOk) {
-  clientesOK[nombreCliente] = necesitaOk;
-  guardarClientesOK();
+// Modal in-chat: pide saber si el cliente necesita OK + email
+function preguntarOKCliente(rutCliente, nombreCliente, onResponse) {
+  const html = `
+    <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+      <div style="font-size:13px;color:var(--text)">¿<strong>${nombreCliente}</strong> debe dar OK antes de mandar la orden al corredor?</div>
+      <div id="ok-email-wrap" style="display:none;flex-direction:column;gap:4px">
+        <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.08em">Email del cliente</label>
+        <input id="ok-cli-email" type="email" placeholder="cliente@email.com" 
+          style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px;outline:none">
+      </div>
+      <div style="display:flex;gap:6px">
+        <button id="ok-btn-si" style="flex:1;padding:9px;background:var(--venta);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">✓ Sí, necesita OK</button>
+        <button id="ok-btn-no" style="flex:1;padding:9px;background:var(--info);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">✗ No, mandar directo</button>
+      </div>
+      <button id="ok-btn-confirmar" style="display:none;padding:9px;background:var(--accent);color:#0d1a0f;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">Confirmar y continuar</button>
+    </div>`;
+  
+  botMsg('', html);
+  
+  setTimeout(() => {
+    const btnSi = document.getElementById('ok-btn-si');
+    const btnNo = document.getElementById('ok-btn-no');
+    const btnConfirmar = document.getElementById('ok-btn-confirmar');
+    const emailWrap = document.getElementById('ok-email-wrap');
+    const emailInput = document.getElementById('ok-cli-email');
+    
+    if (btnNo) btnNo.onclick = async () => {
+      btnSi.disabled = btnNo.disabled = true;
+      await aprenderOK(rutCliente, false);
+      onResponse({ necesitaOk: false, emailOk: null });
+    };
+    
+    if (btnSi) btnSi.onclick = () => {
+      btnSi.style.opacity = '0.5';
+      btnNo.style.display = 'none';
+      emailWrap.style.display = 'flex';
+      btnConfirmar.style.display = 'block';
+      emailInput.focus();
+    };
+    
+    if (btnConfirmar) btnConfirmar.onclick = async () => {
+      const email = emailInput.value.trim();
+      if (!email || !/.+@.+\..+/.test(email)) {
+        emailInput.style.borderColor = 'var(--venta)';
+        emailInput.focus();
+        return;
+      }
+      btnConfirmar.disabled = true;
+      await aprenderOK(rutCliente, true, email);
+      onResponse({ necesitaOk: true, emailOk: email });
+    };
+  }, 50);
 }
-
-// Cargar al iniciar
-cargarClientesOK();
 
 // ── MODAL CLIENTE ──
 function abrirModal() {
