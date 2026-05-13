@@ -1912,7 +1912,25 @@ function detectarTipoOperacion(datos) {
   return op || 'Operación';
 }
 
-// Construye el subject con formato: ORDEN DD-MM L · Tipo
+// Devuelve la siguiente letra disponible para un email del día (A, B, C... basada en letra_op ya usadas)
+async function siguienteLetraDelDia(fecha, tabla='ordenes') {
+  try {
+    const { data } = await SB.from(tabla).select('letra_op').eq('fecha', fecha).not('letra_op','is',null);
+    const usadas = new Set((data||[]).map(r => r.letra_op).filter(Boolean));
+    // Convertir letras a números, encontrar la mayor, sumar 1
+    let max = 0;
+    for (const l of usadas) {
+      let n = 0;
+      for (const ch of l) n = n * 26 + (ch.charCodeAt(0) - 64);
+      if (n > max) max = n;
+    }
+    return numeroALetra(max + 1);
+  } catch(e) {
+    return 'A';
+  }
+}
+
+// Construye el subject con formato: **ORDEN DD-MM L** Tipo
 async function construirSubject(datos, tipo='orden') {
   const fecha = datos.fecha || todayStr();
   const [yyyy, mm, dd] = fecha.split('-');
@@ -1922,28 +1940,12 @@ async function construirSubject(datos, tipo='orden') {
   let letra = datos.letra_op || null;
   
   if (!letra) {
-    // Calcular letra basada en orden de creación del día
-    let count = 1;
-    try {
-      const tabla = tipo === 'orden' ? 'ordenes' : 'aportes';
-      if (datos.id) {
-        // Orden existente: contar cuántas hay con id <= esta orden en el mismo día
-        const { data } = await SB.from(tabla).select('id').eq('fecha', fecha).order('id', {ascending:true});
-        const idx = (data||[]).findIndex(r => r.id === datos.id);
-        count = idx >= 0 ? idx + 1 : (data?.length || 1);
-      } else {
-        // Orden nueva: es la siguiente
-        const { count: c } = await SB.from(tabla).select('*', {count:'exact', head:true}).eq('fecha', fecha);
-        count = (c || 0) + 1;
-      }
-    } catch(e) { count = 1; }
-    
-    letra = numeroALetra(count);
+    const tabla = tipo === 'orden' ? 'ordenes' : 'aportes';
+    letra = await siguienteLetraDelDia(fecha, tabla);
     
     // Guardar la letra en la BD para reutilizarla en reenvíos
     if (datos.id) {
       try {
-        const tabla = tipo === 'orden' ? 'ordenes' : 'aportes';
         await SB.from(tabla).update({letra_op: letra}).eq('id', datos.id);
       } catch(e) { /* tabla puede no tener la columna aún */ }
     }
@@ -1971,16 +1973,21 @@ async function enviarEmailCruce(rows, corredora) {
   }
   if (!destino) return { ok:false, msg: `Sin email para "${corredora}"` };
 
-  // Construir subject usando la primera row (todas comparten fecha)
-  const subj = await construirSubject({...rows[0], esCruce: true}, 'orden');
+  // Una sola letra para todo el cruce
+  const fecha = rows[0]?.fecha || todayStr();
+  let letra = rows.find(r => r.letra_op)?.letra_op || null;
+  if (!letra) letra = await siguienteLetraDelDia(fecha, 'ordenes');
   
-  // Si todas las rows comparten letra_op, persistirla
-  const letraSubj = subj.match(/\*\*ORDEN[^*]*\s+([A-Z]+)\*\*/)?.[1];
-  if (letraSubj) {
+  const [yyyy,mm,dd] = fecha.split('-');
+  const fechaCorta = `${dd}-${mm}`;
+  const subj = `**ORDEN ${fechaCorta} ${letra}** Cruce entre clientes`;
+  
+  // Persistir la misma letra en todas las patas
+  try {
     for (const r of rows) {
-      try { await SB.from('ordenes').update({letra_op: letraSubj}).eq('id', r.id); } catch(e){}
+      await SB.from('ordenes').update({letra_op: letra}).eq('id', r.id);
     }
-  }
+  } catch(e){}
 
   const userName = CURRENT_USER?.nombre?.split(' ')[0] || '';
   const contactName = (destino.split('@')[0]||'').split('.')[0];
@@ -2079,29 +2086,19 @@ async function enviarEmailMultiple(rows, corredora) {
   const [yyyy,mm,dd] = fecha.split('-');
   const fechaCorta = `${dd}-${mm}`;
   
-  // Letra: usar la mayor letra entre las rows (la última operación del bloque)
-  let maxCount = 0;
-  try {
-    const { data } = await SB.from('ordenes').select('id').eq('fecha', fecha).order('id', {ascending:true});
-    for (const r of rows) {
-      const idx = (data||[]).findIndex(d => d.id === r.id);
-      if (idx >= 0 && idx+1 > maxCount) maxCount = idx+1;
-    }
-  } catch(e){}
-  const letraInicial = numeroALetra(Math.max(1, maxCount - rows.length + 1));
-  const letraFinal = numeroALetra(Math.max(1, maxCount));
-  const rangoLetras = letraInicial === letraFinal ? letraInicial : `${letraInicial}-${letraFinal}`;
+  // Una sola letra para todo el lote: la siguiente disponible del día
+  // Si alguna row ya tiene letra_op (reenvío), usar esa
+  let letra = rows.find(r => r.letra_op)?.letra_op || null;
+  if (!letra) {
+    letra = await siguienteLetraDelDia(fecha, 'ordenes');
+  }
   
-  const subj = `**ORDEN ${fechaCorta} ${rangoLetras}** Múltiples operaciones`;
+  const subj = `**ORDEN ${fechaCorta} ${letra}** Múltiples operaciones`;
   
-  // Persistir letras correlativas
+  // Persistir la misma letra en todas las rows del lote
   try {
-    const { data } = await SB.from('ordenes').select('id').eq('fecha', fecha).order('id', {ascending:true});
     for (const r of rows) {
-      const idx = (data||[]).findIndex(d => d.id === r.id);
-      if (idx >= 0) {
-        await SB.from('ordenes').update({letra_op: numeroALetra(idx+1)}).eq('id', r.id);
-      }
+      await SB.from('ordenes').update({letra_op: letra}).eq('id', r.id);
     }
   } catch(e){}
 
@@ -3374,6 +3371,16 @@ function processCommand(text) {
   // Normalize "del X" → "de X", "al X" → "a X"
   text = text.replace(/\bdel\s+/gi, 'de ').replace(/\bal\s+/gi, 'a ');
   if (/\b(CRUCE|CROSS)\b/i.test(text)) { parseCruce(text); return; }
+  
+  // Cruce implícito: "X vende ... Y compra" o "X compra ... Y vende" (sin separadores)
+  const tieneCompra = /\b(COMPRA|COMPRAR|COMPRO|COMPRÉ|COMPRÁ)\b/i.test(text);
+  const tieneVenta  = /\b(VENTA|VENDER|VENDO|VENDE|VENDÉ|VENDED)\b/i.test(text);
+  const tieneSep    = /\n|(?<=\S)\s*[\/\|]\s*(?=\S)/.test(text);
+  if (tieneCompra && tieneVenta && !tieneSep) {
+    parseCruce(text);
+    return;
+  }
+  
   if (/\b(SALDO|BALANCE|DISPONIBLE)\b/i.test(text)) { parseSaldo(text); return; }
   if (/\b(APORTE|APORTAR|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
   if (/\b(RESCATE|RESCATAR)\b/i.test(text)) { parseAporte(text,'Rescate'); return; }
@@ -3951,6 +3958,23 @@ function splitEnOrdenes(text) {
   // Si hay CRUCE en el texto → nunca dividir, parseCruce maneja todo
   if (/\b(CRUCE|CROSS|CRUCEME|CRUZAME)\b/i.test(text)) return [text];
 
+  // ── Detección de cruce implícito ──────────────────────────────────
+  // Patrón: "X vende ... Y compra" o "X compra ... Y vende" en un solo párrafo
+  // sin separadores explícitos (sin / | ni saltos de línea)
+  // Ejemplos:
+  //   "Mario vende 50 palos albion y Iker los compra"
+  //   "Juan compra 1000 COPEC y Pedro se los vende"
+  //   "Bruno vende 30 LTM, Ian se los compra"
+  const tieneSeparadorExplicito = /\n|(?<=\S)\s*[\/\|]\s*(?=\S)/.test(text);
+  if (!tieneSeparadorExplicito) {
+    const vendeCompra = /\bvende[s]?\b.*?\b(?:se\s+l[oa]s?\s+)?compra[s]?\b/i.test(text);
+    const compraVende = /\bcompra[s]?\b.*?\b(?:se\s+l[oa]s?\s+)?vende[s]?\b/i.test(text);
+    if (vendeCompra || compraVende) {
+      // Es un cruce implícito → no dividir, dejar que parseCruce lo maneje
+      return [text];
+    }
+  }
+
   const VERBS = /(compra|comprar|venta|vender|vendo|vende|aporte|aportar|rescate|rescatar|saldo|cruce|comprale|cómprale|compremos|compremosle|vendele|véndale|vendemos|aportale)/i;
 
   // ── Estrategia 1: separadores explícitos ─────────────────────────
@@ -3970,25 +3994,56 @@ function splitEnOrdenes(text) {
   const matches = [...upText.matchAll(verbPattern)];
 
   if (matches.length >= 2) {
-    // Split text at each verb position (except the first)
+    // Si los dos verbos son uno de compra y otro de venta → cruce implícito (ya tratado arriba pero por si acaso)
+    const tieneCompra = matches.some(m => /^COMPRA/.test(m[1]));
+    const tieneVenta  = matches.some(m => /^(VEND|VENTA)/.test(m[1]));
+    if (tieneCompra && tieneVenta && matches.length === 2) {
+      return [text];
+    }
+    
+    // Encontrar el sujeto (cliente) antes de cada verbo
+    // Para cada verbo, retroceder hasta encontrar un nombre propio o el final del verbo anterior
     const parts = [];
     for (let i = 0; i < matches.length; i++) {
-      const start = matches[i].index;
-      const end   = matches[i+1]?.index ?? text.length;
-      parts.push(text.slice(start, end).trim());
+      const verbStart = matches[i].index;
+      // Buscar inicio de esta parte:
+      //   - Si es el primer verbo: desde el inicio del texto
+      //   - Si no: buscar el sujeto entre el verbo anterior y este verbo
+      let partStart;
+      if (i === 0) {
+        partStart = 0;
+      } else {
+        const prevVerbEnd = matches[i-1].index + matches[i-1][0].length;
+        // Buscar conectores que marcan inicio de nueva operación: " y ", ", ", ". "
+        const between = text.slice(prevVerbEnd, verbStart);
+        // Encontrar el último conector seguido de un nombre propio (mayúscula)
+        const connectorM = between.match(/.*[\s,]+(?:y\s+)?([A-ZÁÉÍÓÚ])/);
+        if (connectorM) {
+          // El nuevo sujeto empieza en la posición de la mayúscula encontrada
+          const subjectRelPos = between.lastIndexOf(connectorM[1]);
+          partStart = prevVerbEnd + subjectRelPos;
+        } else {
+          // No hay sujeto explícito antes del verbo → usar el verbo directamente
+          partStart = verbStart;
+        }
+      }
+      const partEnd = matches[i+1] ? (() => {
+        // Buscar dónde empieza el sujeto del siguiente verbo para no incluirlo
+        const nextVerbStart = matches[i+1].index;
+        const nextVerbEnd = nextVerbStart + matches[i+1][0].length;
+        const between = text.slice(verbStart, nextVerbStart);
+        const connectorM = between.match(/.*[\s,]+(?:y\s+)?([A-ZÁÉÍÓÚ])/);
+        if (connectorM) {
+          const subjectRelPos = between.lastIndexOf(connectorM[1]);
+          return verbStart + subjectRelPos;
+        }
+        return nextVerbStart;
+      })() : text.length;
+      
+      parts.push(text.slice(partStart, partEnd).trim().replace(/[,;\s]+$/,''));
     }
-    // Also prepend anything before the first verb (usually noise)
-    if (matches[0].index > 3) {
-      // Ignore prefix — it's likely a greeting
-    }
-    if (parts.length >= 2) return parts;
+    if (parts.length >= 2 && parts.every(p => p.length > 5)) return parts;
   }
-
-  // ── Estrategia 3: nombre de banquero como separador ──────────────
-  // Si BANKERS_DB está cargado, buscar nombres de banqueros en el texto
-  // como indicadores de "nueva operación para este banquero"
-  // Ej: "compra COPEC Juan 1000 MBI / Mario compra LTM 500 LV"
-  // → más complejo, se maneja via estrategia 2 con verbo
 
   return [text]; // operación simple
 }
