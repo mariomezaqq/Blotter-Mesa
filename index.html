@@ -2296,6 +2296,16 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
         subject:subj,
         body:{contentType:'HTML',content:htmlBody},
         toRecipients:[{emailAddress:{address:toAddress}}],
+        ccRecipients: ccList
+      },
+      saveToSentItems:true
+    })
+  });
+  if (r.ok||r.status===202) return {ok:true};
+  const err=await r.json().catch(()=>({}));
+  return {ok:false, msg:err.error?.message||`HTTP ${r.status}`};
+}
+
 // ═══════════════════════════════════════════════════════════
 async function cargarClientes() {
   const { data } = await SB.from('clientes').select('*, cuentas(*)').order('nombre');
