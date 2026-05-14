@@ -3785,7 +3785,8 @@ function selectCondicionBtn(cond) {
   chatContext.parsed.condicion = cond;
   const p = chatContext.parsed;
   chatContext = null;
-  checkMissingAndConfirm(p);
+  if (p.type === 'cruce') continuarFlujoCruce(p);
+  else checkMissingAndConfirm(p);
 }
 
 function selectCuentaBtn(cta, corredora) {
@@ -3915,6 +3916,25 @@ function handleNewClientBtn(confirm) { handleChatInput(confirm ? 'si' : 'no'); }
 function handleMissingField(text) {
   const {field, parsed} = chatContext;
   if (!parsed) return;
+  
+  // Caso especial: RUT de un participante de cruce
+  if (field === 'rut_participante') {
+    const rutM = text.match(/\d{7,8}-?[\dKk]/);
+    if (!rutM) { botMsg('RUT inválido. Formato: <em>12345678-9</em>'); return; }
+    const rut = formatRut(rutM[0]);
+    chatContext.participante.rut = rut;
+    // Buscar si ese RUT corresponde a un cliente existente
+    const found = DB_CLIENTES.find(c => normalizeRut(c.rut) === normalizeRut(rut));
+    if (found) {
+      chatContext.participante.nombre = found.nombre;
+      chatContext.participante.cta = found.cuentas?.[0]?.cta || '';
+    }
+    // Continuar el flujo del cruce buscando el siguiente participante sin rut o pasando al confirm
+    chatContext = null;
+    continuarFlujoCruce(parsed);
+    return;
+  }
+  
   switch(field) {
     case 'rut': {
       const rutM = text.match(/\d{7,8}-?[\dKk]/);
@@ -3938,7 +3958,55 @@ function handleMissingField(text) {
       break;
     }
   }
-  checkMissingAndConfirm(parsed);
+  
+  // Si es cruce, volver al flujo de cruce (no al de orden simple)
+  if (parsed.type === 'cruce') {
+    chatContext = null;
+    continuarFlujoCruce(parsed);
+  } else {
+    checkMissingAndConfirm(parsed);
+  }
+}
+
+// Vuelve a chequear si faltan campos en un cruce y avanza
+function continuarFlujoCruce(parsed) {
+  // Precio
+  if (!parsed.precio || Number(parsed.precio) <= 0) {
+    chatContext = {state:'await_missing_field', field:'precio', parsed};
+    const isFondo = /^CF[IM]/.test(parsed.nemo||'');
+    botMsg(`¿Cuál es el <strong>${isFondo?'valor cuota':'precio'}</strong> del cruce?`);
+    return;
+  }
+  // Condición
+  if (!parsed.condicion) {
+    chatContext = {state:'await_missing_field', field:'condicion', parsed};
+    botMsg('¿Cuál es la condición del cruce?',
+      `<div class="alias-suggestion" style="margin-top:6px">
+        <div class="alias-sug-title">Seleccioná la condición</div>
+        <div class="alias-sug-opts">
+          <button class="alias-opt" onclick="selectCondicionBtn('PH')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto"><strong style="font-size:12px">PH</strong><span style="font-size:9px;color:var(--text2)">Paga Hoy</span></button>
+          <button class="alias-opt" onclick="selectCondicionBtn('PM')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto"><strong style="font-size:12px">PM</strong><span style="font-size:9px;color:var(--text2)">Paga Mañana</span></button>
+          <button class="alias-opt" onclick="selectCondicionBtn('CN')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto"><strong style="font-size:12px">CN</strong><span style="font-size:9px;color:var(--text2)">Contado Normal</span></button>
+        </div>
+      </div>`);
+    return;
+  }
+  // Corredora
+  if (!parsed.corredora) {
+    chatContext = {state:'await_missing_field', field:'corredora', parsed};
+    botMsg('¿Por qué corredora va el cruce? (ej: <em>MBI</em>, <em>LV</em>, <em>BTG</em>)');
+    return;
+  }
+  // Cantidad por participante (si quedó alguno sin)
+  const todosPart = [...(parsed.vendedores||[]), ...(parsed.compradores||[])];
+  const sinRut = todosPart.find(x => !x.rut);
+  if (sinRut) {
+    chatContext = {state:'await_missing_field', field:'rut_participante', parsed, participante:sinRut};
+    botMsg(`¿Cuál es el <strong>RUT</strong> de ${sinRut.nombre}? (ej: <em>12345678-9</em>)`);
+    return;
+  }
+  // Todo listo → mostrar confirmación
+  showCruceConfirm(parsed);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -4399,13 +4467,7 @@ function parseCruce(text) {
   let precio = null;
   const precioM = text.match(/(?:a|precio)\s+(\d[\d.,]*)/i);
   if (precioM) {
-    const raw = precioM[1];
-    // Handle Chilean decimal comma: "1055,4" → 1055.4 but "1.055,4" → 1055.4
-    if (/,/.test(raw) && !/\.\d{3}/.test(raw)) {
-      precio = parseFloat(raw.replace(',','.'));
-    } else {
-      precio = Math.round(parseFloat(raw.replace(/\./g,'').replace(',','.')));
-    }
+    precio = parsePrecio(precioM[1]);
   }
 
   // ── Condición ─────────────────────────────────────────────
@@ -4465,23 +4527,43 @@ function parseCruce(text) {
   }
 
   // ── Formato 3: lenguaje natural con sujeto explícito ─────
-  // "Mario compra... y Juan se las vende/compra"
-  // "Juan le compra a Mario que vende"
+  // "Iker aspillaga vende ... y Mario lo compra"  → Iker=venta, Mario=compra
+  // "Mario compra ... y Juan se las vende"        → Mario=compra, Juan=venta
   if (!vendedoresTxt && !compradoresTxt) {
-    // Buscar patrones "[NOMBRE] compra" y "[NOMBRE] vende"
-    const patronCompra = /([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+(?:compra|le\s+compra|quiere\s+comprar)/gi;
-    const patronVenta  = /([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+(?:vende|le\s+vende|se\s+las\s+(?:compra|vende)|quiere\s+vender)/gi;
+    // Pronombres anafóricos opcionales entre nombre y verbo
+    // Acepta: "Mario lo compra", "Mario los compra", "Mario las compra"
+    //         "Mario se los compra", "Mario le compra"
+    //         "Mario compra" (sin pronombre)
+    const pronOpc = '(?:l[oa]s?\\s+|se\\s+l[oa]s?\\s+|le\\s+)?';
+    const nombreRe = '([A-ZÁÉÍÓÚ][a-záéíóú]+(?:\\s+[A-ZÁÉÍÓÚ][a-záéíóú]+)?)';
+    
+    const patronCompra = new RegExp(nombreRe + '\\s+' + pronOpc + '(?:compra[sn]?|quiere\\s+comprar)\\b', 'gi');
+    const patronVenta  = new RegExp(nombreRe + '\\s+' + pronOpc + '(?:vende[sn]?|quiere\\s+vender)\\b', 'gi');
 
-    const nombresCompra = [...text.matchAll(patronCompra)].map(m => m[1].trim());
-    const nombresVenta  = [...text.matchAll(patronVenta)].map(m => m[1].trim());
+    const SKIP_WORDS = new Set(['HOLA','BUENAS','HEY','CHE','EL','LA','LOS','LAS','LE','LES','SE','QUE']);
+    
+    const cleanName = (s) => {
+      const n = s.trim().toUpperCase();
+      const first = n.split(/\s+/)[0];
+      if (SKIP_WORDS.has(first)) return null;
+      return n;
+    };
 
-    // "X se las compra" = X es comprador (le compra a quien vende)
-    // "X se las vende" = X es vendedor
-    // Detectar "se las compra" → ese es el comprador
-    const seLasCompraM = text.match(/([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+se\s+las\s+compra/i);
-    const seLasVendeM  = text.match(/([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+)?)\s+se\s+las\s+vende/i);
-    if (seLasCompraM) nombresCompra.push(seLasCompraM[1].trim());
-    if (seLasVendeM)  nombresVenta.push(seLasVendeM[1].trim());
+    const nombresCompra = [];
+    const nombresVenta = [];
+    let m;
+    
+    patronCompra.lastIndex = 0;
+    while ((m = patronCompra.exec(text)) !== null) {
+      const n = cleanName(m[1]);
+      if (n) nombresCompra.push(n);
+    }
+    
+    patronVenta.lastIndex = 0;
+    while ((m = patronVenta.exec(text)) !== null) {
+      const n = cleanName(m[1]);
+      if (n) nombresVenta.push(n);
+    }
 
     if (nombresCompra.length || nombresVenta.length) {
       compradoresTxt = nombresCompra.join(', ');
@@ -4521,6 +4603,27 @@ function parseCruce(text) {
   const vendedores  = parseParticipantes(vendedoresTxt);
   const compradores = parseParticipantes(compradoresTxt);
 
+  // ── Calcular cantidad global del cruce ──────────────────
+  // Si vino "20 palos" o "X millones" → monto / precio = cantidad
+  // Si vino "1000 cuotas/acciones" → cantidad directa
+  let cantidadGlobal = null;
+  const montoGlobalM = text.match(/(\d[\d.,]*)\s*(?:palos?|millones?)/i);
+  if (montoGlobalM && precio) {
+    const monto = parseMontoNatural(montoGlobalM[0]);
+    if (monto) cantidadGlobal = Math.round(monto / precio);
+  } else {
+    const cantUM = text.match(/(\d[\d.,]*)\s*(?:cuotas?|acciones?|t[íi]tulos?|unidades?)/i);
+    if (cantUM) cantidadGlobal = Math.round(parseFloat(cantUM[1].replace(/\./g,'').replace(',','.')));
+  }
+  
+  // Asignar cantidad global a participantes que no tengan cantidad propia
+  if (cantidadGlobal) {
+    // Si solo hay 1 vendedor y 1 comprador → ambos toman la cantidad global
+    // Si hay varios → solo los que no tengan asignan la global (split manual no soportado aún)
+    for (const p of vendedores)  if (!p.cantidad) p.cantidad = cantidadGlobal;
+    for (const p of compradores) if (!p.cantidad) p.cantidad = cantidadGlobal;
+  }
+
   // ── Si no se pudieron separar, mostrar ayuda contextual ──
   if (!vendedores.length && !compradores.length) {
     botMsg('Entendí que es un cruce de <strong>' + (nemo||'?') + '</strong>. ' +
@@ -4550,6 +4653,54 @@ function parseCruce(text) {
   if (nemoResult.ambiguous) {
     chatContext = {state:'await_nemo_disambig', parsed};
     showAliasSuggestion(nemoResult.original, nemoResult.candidates, nemoResult.fondoCandidates);
+    return;
+  }
+
+  // Precio obligatorio
+  if (!parsed.precio || Number(parsed.precio) <= 0) {
+    chatContext = {state:'await_missing_field', field:'precio', parsed};
+    const isFondo = /^CF[IM]/.test(nemo||'');
+    botMsg(`¿Cuál es el <strong>${isFondo?'valor cuota':'precio'}</strong> del cruce?`);
+    return;
+  }
+
+  // Condición obligatoria → mostrar opciones de botones
+  if (!parsed.condicion) {
+    chatContext = {state:'await_missing_field', field:'condicion', parsed};
+    botMsg('¿Cuál es la condición del cruce?',
+      `<div class="alias-suggestion" style="margin-top:6px">
+        <div class="alias-sug-title">Seleccioná la condición</div>
+        <div class="alias-sug-opts">
+          <button class="alias-opt" onclick="selectCondicionBtn('PH')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+            <strong style="font-size:12px">PH</strong>
+            <span style="font-size:9px;color:var(--text2)">Paga Hoy</span>
+          </button>
+          <button class="alias-opt" onclick="selectCondicionBtn('PM')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+            <strong style="font-size:12px">PM</strong>
+            <span style="font-size:9px;color:var(--text2)">Paga Mañana</span>
+          </button>
+          <button class="alias-opt" onclick="selectCondicionBtn('CN')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+            <strong style="font-size:12px">CN</strong>
+            <span style="font-size:9px;color:var(--text2)">Contado Normal</span>
+          </button>
+        </div>
+      </div>`);
+    return;
+  }
+
+  // Corredora obligatoria
+  if (!parsed.corredora) {
+    chatContext = {state:'await_missing_field', field:'corredora', parsed};
+    botMsg('¿Por qué corredora va el cruce? (ej: <em>MBI</em>, <em>LV</em>, <em>BTG</em>)');
+    return;
+  }
+
+  // RUTs faltantes en participantes → preguntar uno por uno
+  const todosPart = [...parsed.vendedores, ...parsed.compradores];
+  const primerSinRut = todosPart.find(x => !x.rut);
+  if (primerSinRut) {
+    chatContext = {state:'await_missing_field', field:'rut_participante', parsed, participante:primerSinRut};
+    botMsg(`¿Cuál es el <strong>RUT</strong> de ${primerSinRut.nombre}? (ej: <em>12345678-9</em>)`);
     return;
   }
 
@@ -4853,55 +5004,58 @@ async function confirmarPendingOrder() {
       precio:p.precio||null, comision:null, email_enviado:false,
       ejecutado_por:executor
     };
-    const {data,error} = await SB.from('ordenes').insert(row).select().single();
-    if (error) { botMsg(`❌ Error: ${error.message}`); return; }
-
+    
     const corrEmail = corredorasConfig[(p.corredora||'').toUpperCase()];
+    const irAlCorredor = corrEmail && outlookAccount;
     
-    // Si no hay corredora configurada o Outlook no conectado, terminamos acá
-    if (!corrEmail || !outlookAccount) {
-      const aviso = !corrEmail ? '' : ' · (conectá Outlook para enviar email)';
-      botMsg(`✅ Orden guardada${aviso}`);
+    const insertarYEnviar = async (necesitaOk, emailOk) => {
+      row.necesita_ok = !!necesitaOk;
+      const {data,error} = await SB.from('ordenes').insert(row).select().single();
+      if (error) { botMsg(`❌ Error: ${error.message}`); return; }
+      
       trackUso(p.nemo, p.cliente);
-      if (isActive('ordenes')) await cargarOrdenes();
-      else showSection('ordenes', document.querySelector('.nav-item'));
-      return;
-    }
-    
-    // ── Flujo de OK del cliente ──
-    const okStatus = necesitaOK(p.rut);
-    
-    const procederConEnvio = async (necesitaOk, emailOk) => {
-      // Marcar la orden con el flag
-      if (typeof necesitaOk === 'boolean') {
-        await SB.from('ordenes').update({necesita_ok: necesitaOk}).eq('id', data.id);
-        data.necesita_ok = necesitaOk;
+      
+      if (!irAlCorredor) {
+        const aviso = !corrEmail ? '' : ' · (conectá Outlook para enviar email)';
+        botMsg(`✅ Orden guardada${aviso}`);
+        if (isActive('ordenes')) await cargarOrdenes();
+        else showSection('ordenes', document.querySelector('.nav-item'));
+        return;
       }
       
+      data.necesita_ok = !!necesitaOk;
       const r = await enviarEmailOutlook(data,'orden').catch(e=>({ok:false,msg:e.message}));
       let emailMsg = '';
       if (r.ok) {
         await SB.from('ordenes').update({email_enviado:true}).eq('id',data.id);
         emailMsg = necesitaOk 
-          ? ` · ✉ email enviado a ${p.corredora} (CC: ${p.cliente} para OK)`
+          ? ` · ✉ email enviado al cliente para OK (CC: ${p.corredora})`
           : ` · ✉ email enviado a ${p.corredora}`;
       } else {
         emailMsg = ` · email falló: ${r.msg}`;
       }
       botMsg(`✅ Orden guardada${emailMsg}`);
-      trackUso(p.nemo, p.cliente);
       if (isActive('ordenes')) await cargarOrdenes();
       else showSection('ordenes', document.querySelector('.nav-item'));
     };
     
+    // Si no va al corredor, no hace falta preguntar OK
+    if (!irAlCorredor) {
+      await insertarYEnviar(false, null);
+      return;
+    }
+    
+    // ── Flujo de OK del cliente (ANTES de insertar) ──
+    const okStatus = necesitaOK(p.rut);
+    
     if (okStatus === null) {
-      // No sabemos → preguntar
+      // No sabemos → preguntar primero, después insertar
       preguntarOKCliente(p.rut, p.cliente, async ({necesitaOk, emailOk}) => {
-        await procederConEnvio(necesitaOk, emailOk);
+        await insertarYEnviar(necesitaOk, emailOk);
       });
     } else {
-      // Ya sabemos
-      await procederConEnvio(okStatus, emailOKCliente(p.rut));
+      // Ya sabemos → insertar y enviar directo
+      await insertarYEnviar(okStatus, emailOKCliente(p.rut));
     }
     return;
 
@@ -5942,42 +6096,62 @@ async function aprenderOK(rutCliente, necesitaOk, emailOk=null) {
 
 // Modal in-chat: pide saber si el cliente necesita OK + email
 function preguntarOKCliente(rutCliente, nombreCliente, onResponse) {
+  // IDs únicos para evitar conflictos si el modal aparece más de una vez
+  const uid = 'ok' + Date.now() + Math.floor(Math.random()*1000);
+  const idWrap     = `${uid}-wrap`;
+  const idInput    = `${uid}-email`;
+  const idBtnSi    = `${uid}-si`;
+  const idBtnNo    = `${uid}-no`;
+  const idBtnConf  = `${uid}-conf`;
+  
   const html = `
-    <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+    <div id="${uid}" style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
       <div style="font-size:13px;color:var(--text)">¿<strong>${nombreCliente}</strong> debe dar OK antes de mandar la orden al corredor?</div>
-      <div id="ok-email-wrap" style="display:none;flex-direction:column;gap:4px">
+      <div id="${idWrap}" style="display:none;flex-direction:column;gap:4px">
         <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.08em">Email del cliente</label>
-        <input id="ok-cli-email" type="email" placeholder="cliente@email.com" 
+        <input id="${idInput}" type="email" placeholder="cliente@email.com" 
           style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px;outline:none">
       </div>
       <div style="display:flex;gap:6px">
-        <button id="ok-btn-si" style="flex:1;padding:9px;background:var(--venta);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">✓ Sí, necesita OK</button>
-        <button id="ok-btn-no" style="flex:1;padding:9px;background:var(--info);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">✗ No, mandar directo</button>
+        <button id="${idBtnSi}" style="flex:1;padding:9px;background:var(--venta);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">✓ Sí, necesita OK</button>
+        <button id="${idBtnNo}" style="flex:1;padding:9px;background:var(--info);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">✗ No, mandar directo</button>
       </div>
-      <button id="ok-btn-confirmar" style="display:none;padding:9px;background:var(--accent);color:#0d1a0f;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">Confirmar y continuar</button>
+      <button id="${idBtnConf}" style="display:none;padding:9px;background:var(--accent);color:#0d1a0f;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">Confirmar y continuar</button>
     </div>`;
   
   botMsg('', html);
   
+  // Limpiar contexto para que mensajes sueltos del usuario no entren al dispatcher
+  chatContext = {state:'await_ok_decision', uid};
+  
   setTimeout(() => {
-    const btnSi = document.getElementById('ok-btn-si');
-    const btnNo = document.getElementById('ok-btn-no');
-    const btnConfirmar = document.getElementById('ok-btn-confirmar');
-    const emailWrap = document.getElementById('ok-email-wrap');
-    const emailInput = document.getElementById('ok-cli-email');
+    const btnSi = document.getElementById(idBtnSi);
+    const btnNo = document.getElementById(idBtnNo);
+    const btnConfirmar = document.getElementById(idBtnConf);
+    const emailWrap = document.getElementById(idWrap);
+    const emailInput = document.getElementById(idInput);
+    
+    const cerrar = () => {
+      const wrap = document.getElementById(uid);
+      if (wrap) wrap.style.opacity = '.5';
+      if (btnSi) btnSi.disabled = true;
+      if (btnNo) btnNo.disabled = true;
+      if (btnConfirmar) btnConfirmar.disabled = true;
+      chatContext = null;
+    };
     
     if (btnNo) btnNo.onclick = async () => {
-      btnSi.disabled = btnNo.disabled = true;
+      cerrar();
       await aprenderOK(rutCliente, false);
       onResponse({ necesitaOk: false, emailOk: null });
     };
     
     if (btnSi) btnSi.onclick = () => {
       btnSi.style.opacity = '0.5';
-      btnNo.style.display = 'none';
-      emailWrap.style.display = 'flex';
-      btnConfirmar.style.display = 'block';
-      emailInput.focus();
+      if (btnNo) btnNo.style.display = 'none';
+      if (emailWrap) emailWrap.style.display = 'flex';
+      if (btnConfirmar) btnConfirmar.style.display = 'block';
+      if (emailInput) emailInput.focus();
     };
     
     if (btnConfirmar) btnConfirmar.onclick = async () => {
@@ -5987,7 +6161,7 @@ function preguntarOKCliente(rutCliente, nombreCliente, onResponse) {
         emailInput.focus();
         return;
       }
-      btnConfirmar.disabled = true;
+      cerrar();
       await aprenderOK(rutCliente, true, email);
       onResponse({ necesitaOk: true, emailOk: email });
     };
