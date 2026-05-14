@@ -5203,17 +5203,11 @@ async function confirmarPendingOrder() {
         seguirConOK();
       };
       
-      if (tasaGuardada === null) {
-        // Primera vez → preguntar
-        preguntarComision(agf, p.corredora, p.nemo, montoBruto, (tasa) => {
-          aplicarTasa(tasa);
-        });
-        return;
-      } else {
-        // Tasa conocida → aplicar directo
-        aplicarTasa(tasaGuardada);
-        return;
-      }
+      // Siempre preguntamos. Si hay tasa guardada, va prellenada como sugerencia.
+      preguntarComision(agf, p.corredora, p.nemo, montoBruto, (tasa) => {
+        aplicarTasa(tasa);
+      }, tasaGuardada);
+      return;
     }
     
     // No aplica comisión → seguir directo
@@ -6311,24 +6305,28 @@ function calcularComision(montoNeto, tasaPct) {
 }
 
 // Modal: pregunta cuánta comisión cobra esta combinación AGF × corredora
-function preguntarComision(agf, corredora, nemo, montoNeto, onResponse) {
+function preguntarComision(agf, corredora, nemo, montoNeto, onResponse, tasaSugerida) {
   const uid = 'com' + Date.now() + Math.floor(Math.random()*1000);
+  const tieneSugerencia = tasaSugerida !== null && tasaSugerida !== undefined;
+  const valorPrellenado = tieneSugerencia ? tasaSugerida : '';
+  const placeholder = tieneSugerencia ? `Última usada: ${tasaSugerida}` : 'ej: 0.2';
+  const titulo = tieneSugerencia
+    ? `<strong>${nemo}</strong> (AGF <strong>${agf}</strong>) por <strong>${corredora}</strong> · usaste <strong>${tasaSugerida}%</strong> antes. ¿Confirmar o cambiar?`
+    : `El fondo <strong>${nemo}</strong> (AGF <strong>${agf}</strong>) transado por <strong>${corredora}</strong> puede cobrar comisión. ¿Cuál es la tasa?`;
+  
   const html = `
     <div id="${uid}" style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
-      <div style="font-size:13px;color:var(--text)">
-        El fondo <strong>${nemo}</strong> (AGF <strong>${agf}</strong>) transado por <strong>${corredora}</strong> 
-        puede cobrar comisión. ¿Cuál es la tasa?
-      </div>
+      <div style="font-size:13px;color:var(--text)">${titulo}</div>
       <div style="display:flex;gap:6px;align-items:center">
-        <input id="${uid}-tasa" type="number" step="0.01" placeholder="ej: 0.2" 
+        <input id="${uid}-tasa" type="number" step="0.01" value="${valorPrellenado}" placeholder="${placeholder}" 
           style="flex:1;padding:9px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:13px;outline:none">
         <span style="font-size:13px;color:var(--text2)">%</span>
       </div>
       <div style="font-size:10px;color:var(--text2)">
-        💡 Monto neto: $${Number(montoNeto).toLocaleString('es-CL')} · IVA 20% se suma sobre la comisión
+        💡 Monto bruto: $${Number(montoNeto).toLocaleString('es-CL')} · IVA 20% sobre la comisión
       </div>
       <div style="display:flex;gap:6px">
-        <button id="${uid}-conf" style="flex:1;padding:9px;background:var(--accent);color:#0d1a0f;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">Aplicar comisión</button>
+        <button id="${uid}-conf" style="flex:1;padding:9px;background:var(--accent);color:#0d1a0f;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">${tieneSugerencia ? 'Aplicar' : 'Aplicar comisión'}</button>
         <button id="${uid}-skip" style="padding:9px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px">Sin comisión</button>
       </div>
     </div>`;
@@ -6342,7 +6340,14 @@ function preguntarComision(agf, corredora, nemo, montoNeto, onResponse) {
     const wrap = document.getElementById(uid);
     const cerrar = () => { if (wrap) wrap.style.opacity='.5'; chatContext = null; };
     
-    if (input) input.focus();
+    if (input) { 
+      input.focus(); 
+      input.select(); 
+      // Enter aplica
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && btnConf) { e.preventDefault(); btnConf.click(); }
+      });
+    }
     
     if (btnConf) btnConf.onclick = async () => {
       const tasa = parseFloat(String(input.value).replace(',','.'));
@@ -6353,7 +6358,7 @@ function preguntarComision(agf, corredora, nemo, montoNeto, onResponse) {
     };
     if (btnSkip) btnSkip.onclick = async () => {
       cerrar();
-      await aprenderTasaComision(agf, corredora, 0);
+      // No aprenderTasaComision aquí: "sin comisión" en una operación puntual NO cambia la default
       onResponse(0);
     };
   }, 50);
