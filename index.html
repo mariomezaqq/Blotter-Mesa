@@ -2207,51 +2207,83 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
     || DB_CLIENTES.find(c => c.rut === datos.rut)?.necesita_ok === true;
   const emailCliente = DB_CLIENTES.find(c => c.rut === datos.rut)?.email_ok || null;
   
-  // Construir tabla profesional estilo Outlook
-  const tableRow = `
-    <tr>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.fecha}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;color:${datos.operacion==='COMPRA'?'#1a7f37':'#cf222e'};font-weight:600">${datos.operacion || datos.instruccion || ''}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.corredora||''}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.cta||'0'}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.moneda||'CLP'}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.rut||''}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.cliente||''}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">${datos.cantidad ? Number(datos.cantidad).toLocaleString('es-CL') : ''}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.nemo||''}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.condicion||''}</td>
-      <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">$ ${datos.precio ? Number(datos.precio).toLocaleString('es-CL', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—'}</td>
-    </tr>`;
+  const esAporte = (tipo === 'aporte') || !!datos.instruccion;
   
-  const tableHtml = `<table style="border-collapse:collapse;width:100%;max-width:900px">
-    <thead>
-      <tr style="background:#1f3a5f;color:#fff">
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fecha</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Operación</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Corredora</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cta.</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Moneda</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Rut</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Cantidad</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Nemo</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Condición</th>
-        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Precio</th>
-      </tr>
-    </thead>
-    <tbody>${tableRow}</tbody>
-  </table>`;
+  // ── Construir tabla según tipo (ORDEN vs APORTE) ──────────
+  let tableHtml;
+  if (esAporte) {
+    // APORTE: Cliente | Rut | Cuenta | Instrucción | Monto | Fondo Mutuo | Serie | Forma de pago
+    const colorInstr = (datos.instruccion||'').toUpperCase().includes('RESCATE') ? '#cf222e' : '#1a7f37';
+    tableHtml = `<table style="border-collapse:collapse;width:100%;max-width:900px">
+      <thead>
+        <tr style="background:#1f3a5f;color:#fff">
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Rut</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cuenta</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Instrucción</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Monto</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fondo Mutuo</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Serie</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Forma de pago</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.cliente||''}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.rut||''}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.cta||'0'}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;color:${colorInstr};font-weight:600">${(datos.instruccion||'').toUpperCase()}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">$ ${datos.monto ? Number(datos.monto).toLocaleString('es-CL') : '—'}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.fondo_mutuo||''}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.serie||''}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.forma_pago||''}</td>
+        </tr>
+      </tbody>
+    </table>`;
+  } else {
+    // ORDEN: Fecha | Operación | Corredora | Cta | Moneda | Rut | Cliente | Cantidad | Nemo | Condición | Precio
+    const tableRow = `
+      <tr>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.fecha}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;color:${datos.operacion==='COMPRA'?'#1a7f37':'#cf222e'};font-weight:600">${datos.operacion || ''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.corredora||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.cta||'0'}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.moneda||'CLP'}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.rut||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.cliente||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">${datos.cantidad ? Number(datos.cantidad).toLocaleString('es-CL') : ''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.nemo||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.condicion||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right">$ ${datos.precio ? Number(datos.precio).toLocaleString('es-CL', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—'}</td>
+      </tr>`;
+    tableHtml = `<table style="border-collapse:collapse;width:100%;max-width:900px">
+      <thead>
+        <tr style="background:#1f3a5f;color:#fff">
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fecha</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Operación</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Corredora</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cta.</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Moneda</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Rut</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Cantidad</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Nemo</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Condición</th>
+          <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Precio</th>
+        </tr>
+      </thead>
+      <tbody>${tableRow}</tbody>
+    </table>`;
+  }
   
-  // Bloque de comisión: solo si hay comisión > 0
+  // Bloque de comisión: solo si hay comisión > 0 Y es orden (aportes no llevan comisión separada)
   let comisionHtml = '';
-  if (datos.comision && Number(datos.comision) > 0 && datos.cantidad && datos.precio) {
+  if (!esAporte && datos.comision && Number(datos.comision) > 0 && datos.cantidad && datos.precio) {
     const isCompra = (datos.operacion||'').toUpperCase() === 'COMPRA';
     const comComIVA = Number(datos.comision);
     const comisionPura = comComIVA / (1 + IVA_TASA);
     const iva = comComIVA - comisionPura;
-    // Monto efectivo = cantidad * precio (lo que sale/entra del fondo realmente)
     const montoEfectivo = Number(datos.cantidad) * Number(datos.precio);
-    // Monto bruto = lo que el cliente desembolsa (compra) o recibe limpio (venta)
     const montoBruto = isCompra ? montoEfectivo + comComIVA : montoEfectivo - comComIVA;
     const tasaCalc = (comisionPura / montoEfectivo) * 100;
     
@@ -2284,23 +2316,26 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
   const primerNombreCliente = (datos.cliente||'').split(/\s+/)[0] || '';
   const contactName = (destino.split('@')[0]||'').split('.')[0];
   
+  const verbo = esAporte 
+    ? ((datos.instruccion||'').toUpperCase().includes('RESCATE') ? 'el siguiente rescate' : 'el siguiente aporte')
+    : 'la siguiente operación';
+  
   let htmlBody;
   if (necesitaOkFlag && emailCliente) {
-    // Dirigido al cliente para que dé OK; corredora en CC
+    // Dirigido al cliente para que dé OK; corredora/AGF en CC
     htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
       <p style="margin:0 0 16px">Hola ${primerNombreCliente.charAt(0).toUpperCase()+primerNombreCliente.slice(1).toLowerCase()},</p>
-      <p style="margin:0 0 16px">Favor dar ok a la siguiente operación:</p>
+      <p style="margin:0 0 16px">Favor dar ok a ${verbo}:</p>
       ${tableHtml}
       ${comisionHtml}
       <p style="margin:24px 0 0">Saludos,</p>
       ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
     </body></html>`;
   } else {
-    // Dirigido a la corredora normal
     const saludo = contactName ? `Hola ${contactName.charAt(0).toUpperCase()+contactName.slice(1)},` : 'Hola,';
     htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
       <p style="margin:0 0 16px">${saludo}</p>
-      <p style="margin:0 0 16px">Por Favor Ingresar la siguiente operación:</p>
+      <p style="margin:0 0 16px">Por Favor Ingresar ${verbo}:</p>
       ${tableHtml}
       ${comisionHtml}
       <p style="margin:24px 0 0">Saludos,</p>
@@ -3254,27 +3289,59 @@ function resolveCliente(text) {
   }
 
   // 3. Name matching — first strip known nemos, aliases and brokers from text
-  const KNOWN_BROKERS = new Set(['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC']);
+  const KNOWN_BROKERS = new Set(['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC','NEVASA','TANNER','SCOTIA']);
   const nemoWords = new Set();
   for (const [nemo, aliases] of Object.entries(NEMO_ALIASES)) {
     nemoWords.add(nemo.toUpperCase());
     aliases.forEach(a => nemoWords.add(a.toUpperCase()));
   }
-  const FUND_WORDS = new Set(['LIQUIDEZ','ALTERNATIVA','ENFOQUE','RENTA','FIJA','VARIABLE',
+  const FUND_WORDS = new Set([
+    // Tipos de fondos / palabras de descripciones de fondos
+    'LIQUIDEZ','ALTERNATIVA','ENFOQUE','RENTA','FIJA','VARIABLE',
     'PLAZO','TOTAL','DEUDA','LATAM','BICE','BTG','SANTANDER','ITAU','SECURITY',
-    'LARRAIN','CREDICORP','VALORES','NP','LTM','DEL','DELS','AL']);
+    'LARRAIN','CREDICORP','VALORES','NP','LTM','DEL','DELS','AL','LOS','LAS','LE','LES',
+    'AHORRO','CORPORATIVO','ESTRATEGIA','ESTRATÉGICO','ESTRATEGICO','BALANCEADO','BALANCED','CRECIMIENTO',
+    'INMOBILIARIO','ACCIONARIO','MULTIACTIVO','RETORNO','ABSOLUTO','GLOBAL','MIXTO',
+    'GARANTIZADO','PROTEGIDO','SUSTENTABLE','SOSTENIBLE','EMERGENTE','EMERGENTES',
+    'MONETARIO','MONETARIA','DOLAR','DÓLAR','EUROS','PESOS','UF','CLP','USD','EUR',
+    // Verbos y acciones
+    'APORTE','APORTA','APORTAR','APORTO','APORTÓ','RESCATE','RESCATA','RESCATAR',
+    'SUSCRIPCION','SUSCRIPCIÓN','TRANSFERENCIA','SALDO','BALANCE','COMPRA','COMPRAR',
+    'VENTA','VENDER','VENDE','VENDO','COMPRO',
+    // Cantidades y unidades
+    'PALOS','PALO','MILLONES','MILLON','MILLÓN','CUOTAS','CUOTA','ACCIONES','ACCION','ACCIÓN',
+    'POR','VIA','VÍA','PARA','DE','EN','SE','LO','LA','SU','CTA','CUENTA','RUT','PRECIO',
+    'COMISION','COMISIÓN','PH','PM','CN','MM',
+    // Series comunes
+    'SERIE','CLASE','SERIES','CLASS',
+    // Forma de pago
+    'CHEQUE','CARGO','EFECTIVO','BANCARIA',
+    // Otros
+    'FONDO','FM','FDO','FFMM','FONDOS','MUTUO','MUTUOS','INVERSION','INVERSIÓN','SOCIEDAD','LTDA','SPA','SA'
+  ]);
 
   // Use continuous-block matching: find longest run of name-like words
   // This prevents words from different parts of the sentence being joined
   const isNW = w => w.length > 2 && !STOP.has(w) && !KNOWN_BROKERS.has(w)
     && !nemoWords.has(w) && !FUND_WORDS.has(w) && !/^\d/.test(w);
 
-  // First try "para [BLOCK]" pattern
-  const paraM = text.match(/\bpara\s+([A-ZÁÉÍÓÚA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|\d)|$)/i);
+  // First try "a [Nombre]" pattern (típico en aportes: "aporta X a MARIO MEZA")
+  const aNombreM = text.match(/(?:^|\s)a\s+([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+){0,3})(?=\s+(?:por|via|cuenta|cta|rut|precio|\d)|\s*$)/i);
   let words = [];
-  if (paraM) {
-    words = paraM[1].toUpperCase().split(/\s+/).filter(isNW);
-  } else {
+  if (aNombreM) {
+    const candidate = aNombreM[1].toUpperCase().split(/\s+/).filter(isNW);
+    if (candidate.length >= 1) words = candidate;
+  }
+
+  // Then try "para [BLOCK]" pattern
+  if (!words.length) {
+    const paraM = text.match(/\bpara\s+([A-ZÁÉÍÓÚA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|\d)|$)/i);
+    if (paraM) {
+      words = paraM[1].toUpperCase().split(/\s+/).filter(isNW);
+    }
+  }
+  
+  if (!words.length) {
     // Fallback: longest continuous block of name words
     const tokens = up.split(/\s+/);
     let bestRun = [], curRun = [];
@@ -3495,7 +3562,7 @@ function processCommand(text) {
   }
   
   if (/\b(SALDO|BALANCE|DISPONIBLE)\b/i.test(text)) { parseSaldo(text); return; }
-  if (/\b(APORTE|APORTAR|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
+  if (/\b(APORTE|APORTA[RS]?|APORTO|APORTÓ|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
   if (/\b(RESCATE|RESCATAR)\b/i.test(text)) { parseAporte(text,'Rescate'); return; }
   if (/\b(TRANSFERENCIA)\b/i.test(text)) { parseAporte(text,'Transferencia'); return; }
   if (/\b(COMPRA|COMPRAR|COMPRO|COMPRÉ|COMPRÁ)\b/i.test(text)) { parseOrden(text,'COMPRA'); return; }
