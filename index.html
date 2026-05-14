@@ -1664,6 +1664,7 @@ async function initApp(user) {
   await cargarClientes();
   await cargarOrdenes();
   await cargarConfigSupabase();
+  await cargarComisionesDesdeBD();
   await loadBanqueros();
   initRealtime();
   initMSAL();
@@ -2241,6 +2242,44 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
     <tbody>${tableRow}</tbody>
   </table>`;
   
+  // Bloque de comisión: solo si hay comisión > 0
+  let comisionHtml = '';
+  if (datos.comision && Number(datos.comision) > 0 && datos.cantidad && datos.precio) {
+    const isCompra = (datos.operacion||'').toUpperCase() === 'COMPRA';
+    const comComIVA = Number(datos.comision);
+    const comisionPura = comComIVA / (1 + IVA_TASA);
+    const iva = comComIVA - comisionPura;
+    // Monto efectivo = cantidad * precio (lo que sale/entra del fondo realmente)
+    const montoEfectivo = Number(datos.cantidad) * Number(datos.precio);
+    // Monto bruto = lo que el cliente desembolsa (compra) o recibe limpio (venta)
+    const montoBruto = isCompra ? montoEfectivo + comComIVA : montoEfectivo - comComIVA;
+    const tasaCalc = (comisionPura / montoEfectivo) * 100;
+    
+    const labelBruto    = isCompra ? 'Monto solicitado' : 'Monto neto a recibir';
+    const labelOper     = isCompra ? '(–) Comisión'     : '(+) Comisión';
+    const labelIVA      = isCompra ? '(–) IVA (20%)'    : '(+) IVA (20%)';
+    const labelEfectivo = isCompra ? 'Total invertido'  : 'Bruto a rescatar';
+    
+    comisionHtml = `<table style="border-collapse:collapse;margin-top:12px;font-family:Arial;font-size:12px">
+      <tr>
+        <td style="padding:5px 14px;border:1px solid #d0d7de;background:#f6f8fa;font-weight:600">${labelBruto}</td>
+        <td style="padding:5px 14px;border:1px solid #d0d7de;text-align:right">$ ${Math.round(montoBruto).toLocaleString('es-CL')}</td>
+      </tr>
+      <tr>
+        <td style="padding:5px 14px;border:1px solid #d0d7de;background:#f6f8fa;font-weight:600">${labelOper} (${tasaCalc.toFixed(2)}%)</td>
+        <td style="padding:5px 14px;border:1px solid #d0d7de;text-align:right">$ ${Math.round(comisionPura).toLocaleString('es-CL')}</td>
+      </tr>
+      <tr>
+        <td style="padding:5px 14px;border:1px solid #d0d7de;background:#f6f8fa;font-weight:600">${labelIVA}</td>
+        <td style="padding:5px 14px;border:1px solid #d0d7de;text-align:right">$ ${Math.round(iva).toLocaleString('es-CL')}</td>
+      </tr>
+      <tr style="background:#1f3a5f;color:#fff">
+        <td style="padding:6px 14px;border:1px solid #1f3a5f;font-weight:700">${labelEfectivo}</td>
+        <td style="padding:6px 14px;border:1px solid #1f3a5f;text-align:right;font-weight:700">$ ${Math.round(montoEfectivo).toLocaleString('es-CL')}</td>
+      </tr>
+    </table>`;
+  }
+  
   const userName = CURRENT_USER?.nombre?.split(' ')[0] || '';
   const primerNombreCliente = (datos.cliente||'').split(/\s+/)[0] || '';
   const contactName = (destino.split('@')[0]||'').split('.')[0];
@@ -2252,6 +2291,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
       <p style="margin:0 0 16px">Hola ${primerNombreCliente.charAt(0).toUpperCase()+primerNombreCliente.slice(1).toLowerCase()},</p>
       <p style="margin:0 0 16px">Favor dar ok a la siguiente operación:</p>
       ${tableHtml}
+      ${comisionHtml}
       <p style="margin:24px 0 0">Saludos,</p>
       ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
     </body></html>`;
@@ -2262,6 +2302,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
       <p style="margin:0 0 16px">${saludo}</p>
       <p style="margin:0 0 16px">Por Favor Ingresar la siguiente operación:</p>
       ${tableHtml}
+      ${comisionHtml}
       <p style="margin:24px 0 0">Saludos,</p>
       ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
     </body></html>`;
@@ -5034,29 +5075,82 @@ async function confirmarPendingOrder() {
       } else {
         emailMsg = ` · email falló: ${r.msg}`;
       }
-      botMsg(`✅ Orden guardada${emailMsg}`);
+      const comisionMsg = row.comision 
+        ? ` · Com ${p.tasaComision}%+IVA → ${p.cantidad.toLocaleString('es-CL')} cuotas (era ${p.cantidadOriginal?.toLocaleString('es-CL')||'—'})`
+        : '';
+      botMsg(`✅ Orden guardada${comisionMsg}${emailMsg}`);
       if (isActive('ordenes')) await cargarOrdenes();
       else showSection('ordenes', document.querySelector('.nav-item'));
     };
     
-    // Si no va al corredor, no hace falta preguntar OK
-    if (!irAlCorredor) {
-      await insertarYEnviar(false, null);
-      return;
+    // Flujo: COMISIÓN → OK → INSERT
+    const seguirConOK = async () => {
+      // Si no va al corredor, no hace falta preguntar OK
+      if (!irAlCorredor) {
+        await insertarYEnviar(false, null);
+        return;
+      }
+      const okStatus = necesitaOK(p.rut);
+      if (okStatus === null) {
+        preguntarOKCliente(p.rut, p.cliente, async ({necesitaOk, emailOk}) => {
+          await insertarYEnviar(necesitaOk, emailOk);
+        });
+      } else {
+        await insertarYEnviar(okStatus, emailOKCliente(p.rut));
+      }
+    };
+    
+    // ── PASO 1: comisión ──────────────────────────────
+    // Solo aplica si: nemo es fondo (CFI/CFM) Y AGF del fondo ≠ corredora
+    const agf = detectarAGFExacto(p.nemo);
+    // montoBruto = lo que el usuario pidió originalmente (50 palos = 50.000.000)
+    const montoBruto = (p.cantidad && p.precio) ? p.cantidad * p.precio : 0;
+    
+    if (agf && p.corredora && agf !== p.corredora.toUpperCase() && montoBruto > 0) {
+      // Esta combinación AGF × corredora puede cobrar comisión
+      const tasaGuardada = tasaComision(agf, p.corredora);
+      
+      const aplicarTasa = (tasa) => {
+        p.tasaComision = tasa;
+        if (tasa > 0) {
+          const factor = (tasa / 100) * (1 + IVA_TASA);
+          // COMPRA: monto bruto es lo que el cliente PAGA → descontar comisión → menos cuotas
+          // VENTA:  monto bruto es lo que el cliente QUIERE RECIBIR → sumar comisión → más cuotas a rescatar
+          let montoEfectivo, comisionTotal;
+          if (p.op === 'COMPRA') {
+            montoEfectivo = montoBruto / (1 + factor);
+            comisionTotal = montoBruto - montoEfectivo;
+          } else {
+            montoEfectivo = montoBruto * (1 + factor);
+            comisionTotal = montoEfectivo - montoBruto;
+          }
+          // Recalcular cantidad de cuotas según el monto efectivo
+          p.cantidadOriginal = p.cantidad;
+          p.montoBrutoOriginal = montoBruto;
+          p.cantidad = Math.round(montoEfectivo / p.precio);
+          row.cantidad = p.cantidad;
+          row.comision = Math.round(comisionTotal);
+        } else {
+          row.comision = null;
+        }
+        seguirConOK();
+      };
+      
+      if (tasaGuardada === null) {
+        // Primera vez → preguntar
+        preguntarComision(agf, p.corredora, p.nemo, montoBruto, (tasa) => {
+          aplicarTasa(tasa);
+        });
+        return;
+      } else {
+        // Tasa conocida → aplicar directo
+        aplicarTasa(tasaGuardada);
+        return;
+      }
     }
     
-    // ── Flujo de OK del cliente (ANTES de insertar) ──
-    const okStatus = necesitaOK(p.rut);
-    
-    if (okStatus === null) {
-      // No sabemos → preguntar primero, después insertar
-      preguntarOKCliente(p.rut, p.cliente, async ({necesitaOk, emailOk}) => {
-        await insertarYEnviar(necesitaOk, emailOk);
-      });
-    } else {
-      // Ya sabemos → insertar y enviar directo
-      await insertarYEnviar(okStatus, emailOKCliente(p.rut));
-    }
+    // No aplica comisión → seguir directo
+    await seguirConOK();
     return;
 
   } else if (p.type === 'cruce') {
@@ -6062,6 +6156,141 @@ function limpiarSaldo() {
 //   true  → necesita OK, copiar al cliente en email
 //   false → no necesita OK, mandar directo
 //   null  → no sabemos aún, preguntar al banquero
+
+// ── SISTEMA DE COMISIONES POR AGF × CORREDORA ──────────────
+// Reglas:
+// - El AGF del nemo se extrae: las letras después de "CFI" o "CFM" hasta antes del "-" o final
+// - Si AGF == corredora → no hay comisión
+// - Si AGF != corredora → buscar tasa aprendida o preguntar
+// - IVA = 20% sobre la comisión
+const IVA_TASA = 0.20;
+
+function extraerAGF(nemo) {
+  if (!nemo) return null;
+  const up = nemo.toUpperCase();
+  // CFIMBIDT-B → MBI, CFIALBIONA → ALB, CFMLVMM → LV
+  const m = up.match(/^CF[IM]([A-Z]{2,4})/);
+  return m ? m[1] : null;
+}
+
+// Heurística: el AGF puede tener distintos largos (2-4 letras).
+// Match contra lista conocida para precisión.
+const AGF_CONOCIDOS = ['MBI','LV','BTG','BICE','BCI','SMB','LARRAINVIAL','SANTANDER','PRINCIPAL','TANNER','COMPASS','VANTRUST','MONEDA','SURA','SCOTIA','CREDICORP','ECP','SECURITY','ITAU','NEVASA','LC'];
+
+function detectarAGFExacto(nemo) {
+  if (!nemo) return null;
+  const up = nemo.toUpperCase();
+  if (!/^CF[IM]/.test(up)) return null;
+  const resto = up.replace(/^CF[IM]/, '');
+  // Probar matches exactos: 4, 3, 2 letras
+  for (const agf of AGF_CONOCIDOS) {
+    if (resto.startsWith(agf)) return agf;
+  }
+  // Fallback: las primeras 2-4 letras
+  const m = resto.match(/^([A-Z]{2,4})/);
+  return m ? m[1] : null;
+}
+
+// Buscar tasa aprendida (en localStorage por velocidad + Supabase para sincronización)
+const COMIS_CACHE_KEY = 'blotter_comisiones';
+let comisionesCache = {};
+try { comisionesCache = JSON.parse(localStorage.getItem(COMIS_CACHE_KEY) || '{}'); } catch(e) {}
+
+async function cargarComisionesDesdeBD() {
+  try {
+    const { data } = await SB.from('comisiones').select('*');
+    if (data) {
+      for (const r of data) {
+        const k = `${r.agf}|${r.corredora}`;
+        comisionesCache[k] = r.tasa;
+      }
+      localStorage.setItem(COMIS_CACHE_KEY, JSON.stringify(comisionesCache));
+    }
+  } catch(e) { /* tabla puede no existir aún */ }
+}
+
+function tasaComision(agf, corredora) {
+  if (!agf || !corredora) return null;
+  const a = agf.toUpperCase().trim();
+  const c = corredora.toUpperCase().trim();
+  // Si AGF == corredora → 0 (no paga comisión)
+  if (a === c) return 0;
+  // Match parcial: AGF "MBI" o LARRAINVIAL→"LV"
+  const k = `${a}|${c}`;
+  return comisionesCache[k] ?? null;
+}
+
+async function aprenderTasaComision(agf, corredora, tasa) {
+  const a = agf.toUpperCase().trim();
+  const c = corredora.toUpperCase().trim();
+  const k = `${a}|${c}`;
+  comisionesCache[k] = tasa;
+  localStorage.setItem(COMIS_CACHE_KEY, JSON.stringify(comisionesCache));
+  try {
+    await SB.from('comisiones').upsert({agf:a, corredora:c, tasa}, {onConflict:'agf,corredora'});
+  } catch(e) { /* tabla puede no existir aún */ }
+}
+
+// Calcula comisión + IVA + total
+function calcularComision(montoNeto, tasaPct) {
+  const tasa = tasaPct / 100;
+  const comision = montoNeto * tasa;
+  const iva = comision * IVA_TASA;
+  return {
+    comision: Math.round(comision),
+    iva: Math.round(iva),
+    total: Math.round(montoNeto + comision + iva)
+  };
+}
+
+// Modal: pregunta cuánta comisión cobra esta combinación AGF × corredora
+function preguntarComision(agf, corredora, nemo, montoNeto, onResponse) {
+  const uid = 'com' + Date.now() + Math.floor(Math.random()*1000);
+  const html = `
+    <div id="${uid}" style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+      <div style="font-size:13px;color:var(--text)">
+        El fondo <strong>${nemo}</strong> (AGF <strong>${agf}</strong>) transado por <strong>${corredora}</strong> 
+        puede cobrar comisión. ¿Cuál es la tasa?
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="${uid}-tasa" type="number" step="0.01" placeholder="ej: 0.2" 
+          style="flex:1;padding:9px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:13px;outline:none">
+        <span style="font-size:13px;color:var(--text2)">%</span>
+      </div>
+      <div style="font-size:10px;color:var(--text2)">
+        💡 Monto neto: $${Number(montoNeto).toLocaleString('es-CL')} · IVA 20% se suma sobre la comisión
+      </div>
+      <div style="display:flex;gap:6px">
+        <button id="${uid}-conf" style="flex:1;padding:9px;background:var(--accent);color:#0d1a0f;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">Aplicar comisión</button>
+        <button id="${uid}-skip" style="padding:9px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px">Sin comisión</button>
+      </div>
+    </div>`;
+  botMsg('', html);
+  chatContext = {state:'await_comision_decision', uid};
+  
+  setTimeout(() => {
+    const input = document.getElementById(uid+'-tasa');
+    const btnConf = document.getElementById(uid+'-conf');
+    const btnSkip = document.getElementById(uid+'-skip');
+    const wrap = document.getElementById(uid);
+    const cerrar = () => { if (wrap) wrap.style.opacity='.5'; chatContext = null; };
+    
+    if (input) input.focus();
+    
+    if (btnConf) btnConf.onclick = async () => {
+      const tasa = parseFloat(String(input.value).replace(',','.'));
+      if (isNaN(tasa) || tasa < 0) { input.style.borderColor = 'var(--venta)'; input.focus(); return; }
+      cerrar();
+      await aprenderTasaComision(agf, corredora, tasa);
+      onResponse(tasa);
+    };
+    if (btnSkip) btnSkip.onclick = async () => {
+      cerrar();
+      await aprenderTasaComision(agf, corredora, 0);
+      onResponse(0);
+    };
+  }, 50);
+}
 
 function necesitaOK(rutCliente) {
   if (!rutCliente) return null;
