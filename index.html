@@ -1906,8 +1906,6 @@ function detectarTipoOperacion(datos) {
   }
   // Es una orden
   const op = (datos.operacion||'').toUpperCase();
-  const cond = (datos.condicion||'').toUpperCase();
-  if (cond === 'CN' || cond.includes('CRUCE')) return 'Cruce entre clientes';
   if (op === 'COMPRA') return 'Compra Cliente';
   if (op === 'VENTA') return 'Venta Cliente';
   return op || 'Operación';
@@ -2221,8 +2219,13 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
   if (!destino) return { ok:false, msg: 'Sin email de destino' };
   
   // ¿El cliente necesita OK?
-  const necesitaOkFlag = datos.necesita_ok === true 
-    || DB_CLIENTES.find(c => c.rut === datos.rut)?.necesita_ok === true;
+  // Excepción: si la corredora está en la lista de "sin OK", saltamos el flujo del cliente
+  const CORREDORAS_SIN_OK_EMAIL = ['MBI'];
+  const corrSinOK = CORREDORAS_SIN_OK_EMAIL.includes((datos.corredora||'').toUpperCase().trim());
+  const necesitaOkFlag = !corrSinOK && (
+    datos.necesita_ok === true 
+    || DB_CLIENTES.find(c => c.rut === datos.rut)?.necesita_ok === true
+  );
   const emailCliente = DB_CLIENTES.find(c => c.rut === datos.rut)?.email_ok || null;
   
   const esAporte = (tipo === 'aporte') || !!datos.instruccion;
@@ -4824,18 +4827,6 @@ function parseCruce(text) {
     for (const p of compradores) if (!p.cantidad) p.cantidad = cantidadGlobal;
   }
 
-  // ── Si no se pudieron separar, mostrar ayuda contextual ──
-  if (!vendedores.length && !compradores.length) {
-    botMsg('Entendí que es un cruce de <strong>' + (nemo||'?') + '</strong>. ' +
-      '¿Quién compra y quién vende?<br>' +
-      '<em>Ejemplo: vende Juan 1000, compra Mario 1000</em>');
-    chatContext = {state:'await_nemo_clarify', parsed: {...parsed,
-      nemo, nemoResult, precio, condicion, corredora,
-      esperandoLados: true
-    }};
-    return;
-  }
-
   const parsed = {
     type: 'cruce', nemo, nemoResult, nemoFound,
     precio, condicion, corredora,
@@ -4843,6 +4834,16 @@ function parseCruce(text) {
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
+
+  // ── Si no se pudieron separar, mostrar ayuda contextual ──
+  if (!vendedores.length && !compradores.length) {
+    parsed.esperandoLados = true;
+    chatContext = {state:'await_nemo_clarify', parsed};
+    botMsg('Entendí que es un cruce de <strong>' + (nemo||'?') + '</strong>. ' +
+      '¿Quién compra y quién vende?<br>' +
+      '<em>Ejemplo: vende Juan 1000, compra Mario 1000</em>');
+    return;
+  }
 
   // Nemo desconocido → preguntar
   if (!nemo || nemoResult.unknown) {
