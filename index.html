@@ -2047,6 +2047,15 @@ async function enviarEmailCruce(rows, corredora) {
       ccList.push({emailAddress:{address: cli.email_ok}});
       seen.add(cli.email_ok.toLowerCase());
     }
+    if (Array.isArray(r.cc_banqueros)) {
+      for (const em of r.cc_banqueros) {
+        if (!em || em === destino) continue;
+        const k = em.toLowerCase();
+        if (seen.has(k)) continue;
+        ccList.push({emailAddress:{address: em}});
+        seen.add(k);
+      }
+    }
   }
 
   const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
@@ -2159,6 +2168,15 @@ async function enviarEmailMultiple(rows, corredora) {
     if (cli?.necesita_ok && cli?.email_ok && !seen.has(cli.email_ok.toLowerCase())) {
       ccList.push({emailAddress:{address: cli.email_ok}});
       seen.add(cli.email_ok.toLowerCase());
+    }
+    if (Array.isArray(r.cc_banqueros)) {
+      for (const em of r.cc_banqueros) {
+        if (!em || em === destino) continue;
+        const k = em.toLowerCase();
+        if (seen.has(k)) continue;
+        ccList.push({emailAddress:{address: em}});
+        seen.add(k);
+      }
     }
   }
 
@@ -2362,6 +2380,17 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
   if (CURRENT_USER?.email && CURRENT_USER.email !== toAddress && !seen.has(CURRENT_USER.email.toLowerCase())) {
     ccList.push({emailAddress:{address:CURRENT_USER.email}});
     seen.add(CURRENT_USER.email.toLowerCase());
+  }
+  
+  // Banqueros adicionales pedidos por el usuario ("copia a X")
+  if (Array.isArray(datos.cc_banqueros)) {
+    for (const em of datos.cc_banqueros) {
+      if (!em || em === toAddress) continue;
+      const k = em.toLowerCase();
+      if (seen.has(k)) continue;
+      ccList.push({emailAddress:{address: em}});
+      seen.add(k);
+    }
   }
 
   const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
@@ -3550,6 +3579,17 @@ function processCommand(text) {
     .replace(/\brescatale\b/gi, 'rescate');
   // Normalize "del X" → "de X", "al X" → "a X"
   text = text.replace(/\bdel\s+/gi, 'de ').replace(/\bal\s+/gi, 'a ');
+  
+  // Detectar "copia a [banquero]" al final del mensaje
+  const cc = detectarCCBanquero(text);
+  if (cc.emails.length || cc.noEncontrados.length) {
+    text = cc.textoLimpio;
+    // Guardar para que parseOrden/parseCruce/parseAporte lo recojan
+    window._pendingCCBanqueros = cc;
+  } else {
+    window._pendingCCBanqueros = null;
+  }
+  
   if (/\b(CRUCE|CROSS)\b/i.test(text)) { parseCruce(text); return; }
   
   // Cruce implícito: requiere pronombre anafórico (lo/los/las/le se compra/vende)
@@ -3569,6 +3609,54 @@ function processCommand(text) {
   if (/\b(VENTA|VENDER|VENDO|VENDE|VENDÉ|VENDED)\b/i.test(text)) { parseOrden(text,'VENTA'); return; }
   if (/\b(FONDO)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
   botMsg('No entendí la instrucción. Empezá con <strong>compra</strong>, <strong>venta</strong>, <strong>aporte</strong>, <strong>rescate</strong> o <strong>saldo</strong>.');
+}
+
+// ═══════════════════════════════════════════════════════════
+// DETECTAR BANQUERO PARA COPIAR EN EMAIL
+// ═══════════════════════════════════════════════════════════
+// Detecta patrones tipo "copia a marco", "cc juan", "con copia a pedro" 
+// al final del mensaje. Devuelve { textoLimpio, emails, nombres, noEncontrados }
+function detectarCCBanquero(text) {
+  const result = { textoLimpio: text, emails: [], nombres: [], noEncontrados: [] };
+  
+  // Patrones: "copia a X", "copiale a X", "cc X", "con copia a X", "cco a X", "+X"
+  // Captura un nombre (1-3 palabras) hasta fin de string o coma
+  const patrones = [
+    /\bcopi(?:a|ale|ame)\s+a?\s+([A-Za-zÁÉÍÓÚáéíóú]+(?:\s+[A-Za-zÁÉÍÓÚáéíóú]+){0,2})\s*$/i,
+    /\bcc\s+a?\s*([A-Za-zÁÉÍÓÚáéíóú]+(?:\s+[A-Za-zÁÉÍÓÚáéíóú]+){0,2})\s*$/i,
+    /\bcon\s+copia\s+a?\s*([A-Za-zÁÉÍÓÚáéíóú]+(?:\s+[A-Za-zÁÉÍÓÚáéíóú]+){0,2})\s*$/i,
+    /\bcco\s+a?\s*([A-Za-zÁÉÍÓÚáéíóú]+(?:\s+[A-Za-zÁÉÍÓÚáéíóú]+){0,2})\s*$/i,
+  ];
+  
+  for (const re of patrones) {
+    const m = text.match(re);
+    if (!m) continue;
+    
+    const nombreCC = m[1].trim();
+    const nombreNorm = nombreCC.toUpperCase();
+    
+    // Buscar banquero por nombre/apellido (match parcial)
+    const banquero = (BANKERS_DB||[]).find(b => {
+      if (!b.nombre || !b.email) return false;
+      const bn = b.nombre.toUpperCase();
+      // Match si todas las palabras del input están en el nombre del banquero
+      const palabrasInput = nombreNorm.split(/\s+/);
+      return palabrasInput.every(p => bn.includes(p));
+    });
+    
+    if (banquero) {
+      result.emails.push(banquero.email);
+      result.nombres.push(banquero.nombre);
+    } else {
+      result.noEncontrados.push(nombreCC);
+    }
+    
+    // Quitar la frase del texto para no contaminar parseo
+    result.textoLimpio = text.replace(re, '').trim();
+    break; // un solo patrón a la vez
+  }
+  
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3629,8 +3717,10 @@ function parseOrden(text, forceOp) {
     cantidad, precio, monto, condicion, moneda, corredora, cta,
     cliente: clientResult?.nombre || '',
     rut:     clientResult?.rut    || '',
-    clienteResult: clientResult
+    clienteResult: clientResult,
+    ccBanqueros: window._pendingCCBanqueros || null
   };
+  window._pendingCCBanqueros = null;
 
   // ── Nemo ambiguous → show buttons ──
   if (nemoResult.ambiguous) {
@@ -4169,8 +4259,10 @@ function parseAporte(text, forceInstruccion) {
     type:'aporte', instruccion, monto, fondo, serie, cta, corredora, formaPago,
     cliente: clientResult?.nombre || '',
     rut:     clientResult?.rut    || '',
-    clienteResult: clientResult
+    clienteResult: clientResult,
+    ccBanqueros: window._pendingCCBanqueros || null
   };
+  window._pendingCCBanqueros = null;
 
   // Cliente desconocido → preguntar
   if (!clientResult || clientResult.unknown) {
@@ -4747,8 +4839,10 @@ function parseCruce(text) {
   const parsed = {
     type: 'cruce', nemo, nemoResult, nemoFound,
     precio, condicion, corredora,
-    vendedores, compradores
+    vendedores, compradores,
+    ccBanqueros: window._pendingCCBanqueros || null
   };
+  window._pendingCCBanqueros = null;
 
   // Nemo desconocido → preguntar
   if (!nemo || nemoResult.unknown) {
@@ -5132,28 +5226,43 @@ async function confirmarPendingOrder() {
       }
       
       data.necesita_ok = !!necesitaOk;
+      data.cc_banqueros = p.ccBanqueros?.emails || [];
       const r = await enviarEmailOutlook(data,'orden').catch(e=>({ok:false,msg:e.message}));
       let emailMsg = '';
       if (r.ok) {
         await SB.from('ordenes').update({email_enviado:true}).eq('id',data.id);
+        const ccMsg = data.cc_banqueros.length 
+          ? ` (CC: ${p.ccBanqueros.nombres.join(', ')})` 
+          : '';
         emailMsg = necesitaOk 
-          ? ` · ✉ email enviado al cliente para OK (CC: ${p.corredora})`
-          : ` · ✉ email enviado a ${p.corredora}`;
+          ? ` · ✉ email enviado al cliente para OK (CC: ${p.corredora}${ccMsg.replace(/^\s\(CC: /, ', ').replace(/\)$/,'')})`
+          : ` · ✉ email enviado a ${p.corredora}${ccMsg}`;
       } else {
         emailMsg = ` · email falló: ${r.msg}`;
       }
+      // Avisar si algún banquero no se encontró
+      const noEnc = p.ccBanqueros?.noEncontrados || [];
+      const warnNoEnc = noEnc.length ? ` ⚠ No encontré a: ${noEnc.join(', ')} (no copiado)` : '';
       const comisionMsg = row.comision 
         ? ` · Com ${p.tasaComision}%+IVA → ${p.cantidad.toLocaleString('es-CL')} cuotas (era ${p.cantidadOriginal?.toLocaleString('es-CL')||'—'})`
         : '';
-      botMsg(`✅ Orden guardada${comisionMsg}${emailMsg}`);
+      botMsg(`✅ Orden guardada${comisionMsg}${emailMsg}${warnNoEnc}`);
       if (isActive('ordenes')) await cargarOrdenes();
       else showSection('ordenes', document.querySelector('.nav-item'));
     };
     
     // Flujo: COMISIÓN → OK → INSERT
+    // Corredoras que NUNCA requieren OK del cliente (configurable)
+    const CORREDORAS_SIN_OK = ['MBI'];
+    
     const seguirConOK = async () => {
       // Si no va al corredor, no hace falta preguntar OK
       if (!irAlCorredor) {
+        await insertarYEnviar(false, null);
+        return;
+      }
+      // Si la corredora está en la lista de "sin OK" → saltar pregunta y mandar directo
+      if (CORREDORAS_SIN_OK.includes((p.corredora||'').toUpperCase().trim())) {
         await insertarYEnviar(false, null);
         return;
       }
