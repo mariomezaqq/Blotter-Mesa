@@ -3595,10 +3595,10 @@ function processCommand(text) {
   
   if (/\b(CRUCE|CROSS)\b/i.test(text)) { parseCruce(text); return; }
   
-  // Cruce implícito: requiere pronombre anafórico (lo/los/las/le se compra/vende)
+  // Cruce implícito: requiere pronombre anafórico (lo/los/la/las/le/les se compra/vende)
   // que indica que el segundo participante refiere a la misma operación del primero.
   // NO basta con que haya "compra" + "venta" en la frase: pueden ser operaciones distintas.
-  const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|le\s+)(?:compra|vende)\b/i;
+  const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|les?\s+)(?:compra|vende)\b/i;
   if (pronombreCruce.test(text)) {
     parseCruce(text);
     return;
@@ -4118,6 +4118,36 @@ function handleMissingField(text) {
   const {field, parsed} = chatContext;
   if (!parsed) return;
   
+  // Caso especial: nombre/RUT de participante pendiente (pronombre solitario)
+  if (field === 'nombre_participante') {
+    const part = chatContext.participante;
+    const input = text.trim();
+    
+    // Si es RUT: resolver al cliente
+    const rutM = input.match(/\d{7,8}-?[\dKk]/);
+    if (rutM) {
+      const rut = formatRut(rutM[0]);
+      const found = DB_CLIENTES.find(c => normalizeRut(c.rut) === normalizeRut(rut));
+      part.rut = rut;
+      part.nombre = found ? found.nombre : input.toUpperCase().replace(/[\d\-Kk]/g,'').trim() || 'NUEVO CLIENTE';
+      part.cta = found?.cuentas?.[0]?.cta || '';
+      part.pendiente = false;
+    } else {
+      // Es un nombre → buscar en DB
+      const nombreUp = input.toUpperCase();
+      const clientResult = resolveCliente(nombreUp);
+      part.nombre = clientResult?.nombre || nombreUp;
+      part.rut = clientResult?.rut || '';
+      part.cta = clientResult?.cliente?.cuentas?.[0]?.cta || '';
+      part.clienteResult = clientResult;
+      part.pendiente = false;
+    }
+    
+    chatContext = null;
+    continuarFlujoCruce(parsed);
+    return;
+  }
+  
   // Caso especial: RUT de un participante de cruce
   if (field === 'rut_participante') {
     const rutM = text.match(/\d{7,8}-?[\dKk]/);
@@ -4198,9 +4228,19 @@ function continuarFlujoCruce(parsed) {
     botMsg('¿Por qué corredora va el cruce? (ej: <em>MBI</em>, <em>LV</em>, <em>BTG</em>)');
     return;
   }
-  // Cantidad por participante (si quedó alguno sin)
+  
+  // Participantes pendientes (pronombre solitario sin nombre)
   const todosPart = [...(parsed.vendedores||[]), ...(parsed.compradores||[])];
-  const sinRut = todosPart.find(x => !x.rut);
+  const pendiente = todosPart.find(x => x.pendiente && !x.nombre);
+  if (pendiente) {
+    const lado = (parsed.compradores||[]).includes(pendiente) ? 'comprador' : 'vendedor';
+    chatContext = {state:'await_missing_field', field:'nombre_participante', parsed, participante:pendiente, lado};
+    botMsg(`¿Quién es el <strong>${lado}</strong>? Decime nombre o RUT.`);
+    return;
+  }
+  
+  // RUTs faltantes
+  const sinRut = todosPart.find(x => !x.rut && x.nombre);
   if (sinRut) {
     chatContext = {state:'await_missing_field', field:'rut_participante', parsed, participante:sinRut};
     botMsg(`¿Cuál es el <strong>RUT</strong> de ${sinRut.nombre}? (ej: <em>12345678-9</em>)`);
@@ -4345,8 +4385,9 @@ function splitEnOrdenes(text) {
   //   "Mario vende 50 palos albion y Iker LOS compra"
   //   "Juan compra 1000 COPEC y Pedro SE LOS vende"
   //   "Bruno vende 30 LTM, Ian SE LOS compra"
+  //   "Mario vende 50 cuotas y Pedro LAS compra"
   // NO es cruce: "Iker vende X y Mario vende Y" (cada uno con su nemo)
-  const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|le\s+)(?:compra|vende)\b/i;
+  const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|les?\s+)(?:compra|vende)\b/i;
   if (pronombreCruce.test(text)) {
     return [text]; // dejar que parseCruce lo maneje
   }
@@ -4721,15 +4762,7 @@ function parseCruce(text) {
   if (slashVC) { vendedoresTxt = slashVC[1]; compradoresTxt = slashVC[2]; }
   else if (slashCV) { compradoresTxt = slashCV[1]; vendedoresTxt = slashCV[2]; }
 
-  // ── Formato 2: "vende X compra Y" sin slash ──────────────
-  else {
-    const noSlashVC = text.match(/vende[s]?\s+(.+?)\s+compra[s]?\s+(.+?)(?:\s*$)/i);
-    const noSlashCV = text.match(/compra[s]?\s+(.+?)\s+vende[s]?\s+(.+?)(?:\s*$)/i);
-    if (noSlashVC) { vendedoresTxt = noSlashVC[1]; compradoresTxt = noSlashVC[2]; }
-    else if (noSlashCV) { compradoresTxt = noSlashCV[1]; vendedoresTxt = noSlashCV[2]; }
-  }
-
-  // ── Formato 3: lenguaje natural con sujeto explícito ─────
+  // ── Formato 3 (PRIORITARIO): lenguaje natural con sujeto explícito ─────
   // "Iker aspillaga vende ... y Mario lo compra"  → Iker=venta, Mario=compra
   // "Mario compra ... y Juan se las vende"        → Mario=compra, Juan=venta
   if (!vendedoresTxt && !compradoresTxt) {
@@ -4737,19 +4770,39 @@ function parseCruce(text) {
     // Acepta: "Mario lo compra", "Mario los compra", "Mario las compra"
     //         "Mario se los compra", "Mario le compra"
     //         "Mario compra" (sin pronombre)
-    const pronOpc = '(?:l[oa]s?\\s+|se\\s+l[oa]s?\\s+|le\\s+)?';
-    const nombreRe = '([A-ZÁÉÍÓÚ][a-záéíóú]+(?:\\s+[A-ZÁÉÍÓÚ][a-záéíóú]+)?)';
+    const pronOpc = '(?:l[oa]s?\\s+|se\\s+l[oa]s?\\s+|les?\\s+)?';
+    // Acepta tanto "Mario Meza" como "mario meza" (chat informal con minúsculas)
+    const nombreRe = '([A-ZÁÉÍÓÚa-záéíóú]+(?:\\s+[A-ZÁÉÍÓÚa-záéíóú]+)?)';
     
     const patronCompra = new RegExp(nombreRe + '\\s+' + pronOpc + '(?:compra[sn]?|quiere\\s+comprar)\\b', 'gi');
     const patronVenta  = new RegExp(nombreRe + '\\s+' + pronOpc + '(?:vende[sn]?|quiere\\s+vender)\\b', 'gi');
 
-    const SKIP_WORDS = new Set(['HOLA','BUENAS','HEY','CHE','EL','LA','LOS','LAS','LE','LES','SE','QUE']);
+    const SKIP_WORDS = new Set([
+      'HOLA','BUENAS','HEY','CHE','EL','LA','LOS','LAS','LE','LES','SE','QUE',
+      'PALOS','PALO','MILLONES','MILLON','MILLÓN','CUOTAS','CUOTA','ACCIONES','ACCION','ACCIÓN',
+      'POR','VIA','VÍA','PARA','DE','DEL','AL','EN','UN','UNA','TAMBIEN','TAMBIÉN','ADEMAS','ADEMÁS','Y',
+      'CTA','CUENTA','RUT','PRECIO','COMISION','COMISIÓN','PH','PM','CN',
+      'COMPRA','COMPRAR','VENTA','VENDER','VENDE','VENDO','COMPRO',
+      'APORTE','APORTAR','RESCATE','RESCATAR',
+      'SALDO','BALANCE','TRANSFERENCIA'
+    ]);
     
+    // Set de palabras de fondos (mismo que en resolveCliente)
+    const NEMO_WORDS = new Set();
+    for (const [nemo, aliases] of Object.entries(NEMO_ALIASES||{})) {
+      NEMO_WORDS.add(nemo.toUpperCase());
+      (aliases||[]).forEach(a => NEMO_WORDS.add(a.toUpperCase()));
+    }
+
     const cleanName = (s) => {
       const n = s.trim().toUpperCase();
-      const first = n.split(/\s+/)[0];
+      const palabras = n.split(/\s+/);
+      // Filtrar palabras de skip y nemos del array
+      const filtradas = palabras.filter(p => !SKIP_WORDS.has(p) && !NEMO_WORDS.has(p));
+      if (!filtradas.length) return null;
+      const first = filtradas[0];
       if (SKIP_WORDS.has(first)) return null;
-      return n;
+      return filtradas.join(' ');
     };
 
     const nombresCompra = [];
@@ -4772,6 +4825,30 @@ function parseCruce(text) {
       compradoresTxt = nombresCompra.join(', ');
       vendedoresTxt  = nombresVenta.join(', ');
     }
+    
+    // ── Detectar pronombre solitario (sin nombre delante)
+    // Ej: "mario vende 50 cuotas y las compra" → falta comprador
+    // Ej: "compra 1000 albion mario y se los vende" → falta vendedor
+    // Si encontramos solo un lado, marcamos el otro como "pendiente"
+    const pronSolo = /(?<![A-ZÁÉÍÓÚa-záéíóú])\s*(?:se\s+l[oa]s?|l[oa]s?|les?)\s+(compra|vende)[sn]?\b/i;
+    const pronSoloM = text.match(pronSolo);
+    if (pronSoloM) {
+      const verboPron = pronSoloM[1].toLowerCase();
+      if (verboPron.startsWith('compra') && !compradoresTxt) {
+        // Hay "lo/las/etc compra" pero sin nombre → marcar como pendiente
+        compradoresTxt = '__PENDIENTE__';
+      } else if (verboPron.startsWith('vende') && !vendedoresTxt) {
+        vendedoresTxt = '__PENDIENTE__';
+      }
+    }
+  }
+
+  // ── Formato 2 (FALLBACK): "vende X compra Y" sin slash y sin sujetos previos ──
+  if (!vendedoresTxt && !compradoresTxt) {
+    const noSlashVC = text.match(/vende[s]?\s+(.+?)\s+compra[s]?\s+(.+?)(?:\s*$)/i);
+    const noSlashCV = text.match(/compra[s]?\s+(.+?)\s+vende[s]?\s+(.+?)(?:\s*$)/i);
+    if (noSlashVC) { vendedoresTxt = noSlashVC[1]; compradoresTxt = noSlashVC[2]; }
+    else if (noSlashCV) { compradoresTxt = noSlashCV[1]; vendedoresTxt = noSlashCV[2]; }
   }
 
   // ── Formato 4: si solo hay 2 participantes y no se identifica quién vende/compra
@@ -4780,6 +4857,10 @@ function parseCruce(text) {
   // ── Parse participantes: "Juan 600, Pedro 400" ──────────
   function parseParticipantes(txt, cantidadTotal) {
     if (!txt || !txt.trim()) return [];
+    // Placeholder de participante por completar
+    if (txt === '__PENDIENTE__') {
+      return [{ nombreRaw:'', nombre:'', rut:'', cta:'', cantidad:null, pendiente:true }];
+    }
     const partes = txt.split(/,|\s+y\s+/).map(p => p.trim()).filter(Boolean);
     return partes.map(part => {
       // Extract trailing number if present
