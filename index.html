@@ -1241,6 +1241,12 @@ tr:hover td{background:var(--surface2)}
       </div>
       <div class="chat-messages" id="chat-messages"></div>
       <div class="chat-input-area">
+        <div id="chat-tipo-selector" style="display:flex;gap:6px;margin-bottom:6px;padding:0 2px">
+          <button id="tipo-btn-auto"     onclick="selectTipoOp('auto')"     style="flex:1;padding:6px 8px;background:var(--accent);color:#0d1a0f;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">⚡ Auto</button>
+          <button id="tipo-btn-orden"    onclick="selectTipoOp('orden')"    style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:11px;font-weight:500;cursor:pointer">Simple</button>
+          <button id="tipo-btn-cruce"    onclick="selectTipoOp('cruce')"    style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:11px;font-weight:500;cursor:pointer">Cruce</button>
+          <button id="tipo-btn-multiple" onclick="selectTipoOp('multiple')" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:11px;font-weight:500;cursor:pointer">Múltiple</button>
+        </div>
         <div class="chat-input-wrap">
           <textarea class="chat-input" id="chat-input"
             placeholder="Ej: compra 5000 COPEC para García RUT 12345678-9 cta 456 SMB precio 8500..."
@@ -2926,6 +2932,40 @@ function fillNemoHint(nemo) {
   autoResize(inp);
 }
 
+// Tipo de operación seleccionado por el usuario (auto, orden, cruce, multiple)
+let TIPO_OP_FORZADO = 'auto';
+
+function selectTipoOp(tipo) {
+  TIPO_OP_FORZADO = tipo;
+  // Update visual state
+  ['auto','orden','cruce','multiple'].forEach(t => {
+    const btn = document.getElementById('tipo-btn-'+t);
+    if (!btn) return;
+    if (t === tipo) {
+      btn.style.background = 'var(--accent)';
+      btn.style.color = '#0d1a0f';
+      btn.style.fontWeight = '600';
+      btn.style.border = 'none';
+    } else {
+      btn.style.background = 'var(--surface2)';
+      btn.style.color = 'var(--text)';
+      btn.style.fontWeight = '500';
+      btn.style.border = '1px solid var(--border2)';
+    }
+  });
+  // Update placeholder hint
+  const inp = document.getElementById('chat-input');
+  if (inp) {
+    const placeholders = {
+      auto:     'Ej: compra 5000 COPEC para García RUT 12345678-9 cta 456 SMB precio 8500...',
+      orden:    'Compra/venta simple. Ej: compra 5000 COPEC para García MBI precio 8500',
+      cruce:    'Cruce entre clientes. Ej: Mario vende 50 palos albion a 1055 y Pedro los compra',
+      multiple: 'Varias operaciones por la misma corredora. Separá con coma o salto de línea'
+    };
+    inp.placeholder = placeholders[tipo] || placeholders.auto;
+  }
+}
+
 function fillHint(type) {
   const hints = {
     compra:  'compra 1000 COPEC García 12345678-9 cta 456 SMB precio 9200',
@@ -3595,13 +3635,14 @@ function processCommand(text) {
   
   if (/\b(CRUCE|CROSS)\b/i.test(text)) { parseCruce(text); return; }
   
-  // Cruce implícito: requiere pronombre anafórico (lo/los/la/las/le/les se compra/vende)
-  // que indica que el segundo participante refiere a la misma operación del primero.
-  // NO basta con que haya "compra" + "venta" en la frase: pueden ser operaciones distintas.
-  const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|les?\s+)(?:compra|vende)\b/i;
-  if (pronombreCruce.test(text)) {
-    parseCruce(text);
-    return;
+  // Cruce implícito por pronombre — SOLO si modo es auto o cruce
+  // (en modo "orden" forzado, el usuario quiere que sea una operación simple)
+  if (TIPO_OP_FORZADO === 'auto' || TIPO_OP_FORZADO === 'cruce') {
+    const pronombreCruce = /\b(?:se\s+l[oa]s?\s+|l[oa]s?\s+|les?\s+)(?:compra|vende)\b/i;
+    if (pronombreCruce.test(text)) {
+      parseCruce(text);
+      return;
+    }
   }
   
   if (/\b(SALDO|BALANCE|DISPONIBLE)\b/i.test(text)) { parseSaldo(text); return; }
@@ -4465,6 +4506,28 @@ function processBloque(text) {
     processCommand(textClean);
     return;
   }
+  
+  // Si el usuario eligió tipo explícitamente, respetar
+  if (TIPO_OP_FORZADO === 'cruce') {
+    parseCruce(text);
+    return;
+  }
+  if (TIPO_OP_FORZADO === 'orden') {
+    // Forzar tratar como orden simple (no dividir, no detectar cruce)
+    processCommand(text);
+    return;
+  }
+  if (TIPO_OP_FORZADO === 'multiple') {
+    // Forzar split aunque no haya separador claro
+    const partes = splitEnOrdenes(text);
+    if (partes.length <= 1) {
+      botMsg('⚠ Modo Múltiple seleccionado pero solo detecté una operación. ¿La quisiste procesar como simple? Cambiá el tipo arriba o agregá más operaciones separadas por coma/línea.');
+      return;
+    }
+    return procesarBloqueMultiple(partes);
+  }
+  
+  // Modo AUTO: detectar tipo automáticamente
 
   const partes = splitEnOrdenes(text);
 
@@ -4473,7 +4536,12 @@ function processBloque(text) {
     processCommand(text);
     return;
   }
+  
+  return procesarBloqueMultiple(partes);
+}
 
+// Procesa un array de partes ya splitteadas como bloque múltiple
+function procesarBloqueMultiple(partes) {
   // Múltiples operaciones — parsear cada una de forma síncrona
   botMsg(`📋 Detecté <strong>${partes.length} operaciones</strong>. Parseando el bloque...`);
 
