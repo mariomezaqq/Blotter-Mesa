@@ -7,7 +7,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -3248,37 +3247,13 @@ function parseMontoNatural(text) {
 // Extracts {cantidad, precio, monto} from natural language
 // Strategy: strip noise first, then identify each number's role by context
 function extractCantidadYPrecio(text) {
-  let cantidad = null, precio = null, monto = null, navFlag = false, navDelta = 0;
+  let cantidad = null, precio = null, monto = null, navFlag = false;
 
   // Step 0: detectar "a NAV", "a valor cuota", "a vc", "al valor cuota" → flag para resolver después
-  // También capturar descuento/premium: "a NAV con 0,1 descuento" / "a NAV -0,1" / "a NAV +0,2"
   const navRe = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navRe.test(text)) {
     navFlag = true;
-    
-    // Buscar descuento/premium DESPUÉS de NAV
-    // Formatos: "NAV con 0,1 descuento", "NAV menos 0,1", "NAV -0,1", "NAV con descuento 0,1", "NAV +0,2", "NAV mas 0,1", "NAV con 0,2 premium"
-    const navContextRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
-    const m = text.match(navContextRe);
-    if (m) {
-      const num = parseFloat(m[2].replace(',', '.'));
-      if (!isNaN(num) && num > 0) {
-        // Determinar signo
-        const pre = (m[1]||'').toLowerCase().trim();
-        const post = (m[4]||'').toLowerCase().trim();
-        const indicator = pre || post;
-        if (indicator) {
-          const isNeg = /^(-|menos|descuento)/i.test(indicator);
-          const isPos = /^(\+|m[áa]s|mas|premium)/i.test(indicator);
-          if (isNeg) navDelta = -num;
-          else if (isPos) navDelta = num;
-        }
-      }
-    }
-    
-    // Eliminar todo el bloque NAV+descuento/premium del texto para no estorbar
-    const navRemoveRe = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(?:\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(?:\d+[.,]?\d*\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(?:descuento|premium|menos|m[áa]s|mas|\+|-)?)?/i;
-    text = text.replace(navRemoveRe, ' ').replace(/\s+/g, ' ').trim();
+    text = text.replace(navRe, ''); // remove para no estorbar parseo
   }
 
   // Step 1: mask non-financial numbers so they don't bleed into parsing
@@ -3334,7 +3309,7 @@ function extractCantidadYPrecio(text) {
     precio = nums[0];
   }
 
-  return {cantidad, precio, monto, navFlag, navDelta};
+  return {cantidad, precio, monto, navFlag};
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3770,37 +3745,17 @@ function parseOrden(text, forceOp) {
   // Detectar y eliminar "a NAV" / "a valor cuota" / "a VC" del texto global
   // antes de cualquier parsing, para que no interfiera con cliente/nemo
   let navFlagGlobal = false;
-  let navDeltaGlobal = 0;
   const navReGlobal = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navReGlobal.test(text)) {
     navFlagGlobal = true;
-    
-    // Detectar descuento/premium ANTES de borrar
-    const navCtxRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
-    const m = text.match(navCtxRe);
-    if (m) {
-      const num = parseFloat(m[2].replace(',', '.'));
-      if (!isNaN(num) && num > 0) {
-        const indicator = ((m[1]||'') + ' ' + (m[3]||'')).toLowerCase().trim();
-        if (/^(-|menos|descuento)/i.test(indicator) || / (-|menos|descuento)/.test(indicator)) {
-          navDeltaGlobal = -num;
-        } else if (/^(\+|m[áa]s|mas|premium)/i.test(indicator) || / (\+|m[áa]s|mas|premium)/.test(indicator)) {
-          navDeltaGlobal = num;
-        }
-      }
-    }
-    
-    // Eliminar el bloque entero NAV + descuento del texto
-    const navRemove = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(?:\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(?:\d+[.,]?\d*\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(?:descuento|premium|menos|m[áa]s|mas|\+|-)?)?/i;
-    text = text.replace(navRemove, ' ').replace(/\s+/g,' ').trim();
+    text = text.replace(navReGlobal, ' ').replace(/\s+/g,' ').trim();
   }
   
   const op = forceOp || (/\b(VENTA|VENDER|VENDO)\b/i.test(text) ? 'VENTA' : 'COMPRA');
 
-  const {cantidad, precio, monto, navFlag, navDelta} = extractCantidadYPrecio(text);
+  const {cantidad, precio, monto, navFlag} = extractCantidadYPrecio(text);
   // Si lo detectamos arriba, propagamos
   const navFinalFlag = navFlag || navFlagGlobal;
-  const navFinalDelta = navDelta || navDeltaGlobal;
   let condicion = '';
   const upT = text.toUpperCase();
   if (/\bPH\b/.test(upT) || /\b(paga\s+hoy|pagahoy)\b/i.test(text))       condicion = 'PH';
@@ -3852,7 +3807,6 @@ function parseOrden(text, forceOp) {
     rut:     clientResult?.rut    || '',
     clienteResult: clientResult,
     navFlag: navFinalFlag,
-    navDelta: navFinalDelta,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -4031,24 +3985,10 @@ function checkMissingAndConfirm(parsed) {
   if (parsed.type === 'orden' && parsed.navFlag && (!parsed.precio || Number(parsed.precio) <= 0) && parsed.nemo) {
     const vc = getValorCuotaNAV(parsed.nemo);
     if (vc) {
-      const navBase = vc.valor;
-      const delta = parsed.navDelta || 0;
-      // delta es % (ej: 0.1 = 0.1%); aplicar como multiplicador
-      const precioFinal = navBase * (1 + delta / 100);
-      // Redondear a 2 decimales
-      parsed.precio = Math.round(precioFinal * 100) / 100;
+      parsed.precio = vc.valor;
       parsed.navFlag = false;
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
-      const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
-      const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
-      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
-      if (delta !== 0) {
-        const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
-        mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
-      } else {
-        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
-      }
-      botMsg(mensaje);
+      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
     } else {
       botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
       chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4384,23 +4324,10 @@ function continuarFlujoCruce(parsed) {
   if (parsed.navFlag && !parsed.precio && parsed.nemo) {
     const vc = getValorCuotaNAV(parsed.nemo);
     if (vc) {
-      const navBase = vc.valor;
-      const delta = parsed.navDelta || 0;
-      const precioFinal = navBase * (1 + delta / 100);
-      // Redondear a 2 decimales
-      parsed.precio = Math.round(precioFinal * 100) / 100;
+      parsed.precio = vc.valor;
       parsed.navFlag = false;
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
-      const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
-      const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
-      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
-      if (delta !== 0) {
-        const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
-        mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
-      } else {
-        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
-      }
-      botMsg(mensaje);
+      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
     } else {
       botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
       chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4965,22 +4892,10 @@ function parseCruce(text) {
   // ── Precio ────────────────────────────────────────────────
   let precio = null;
   let navFlag = false;
-  let navDelta = 0;
-  // Primero: "a NAV" con descuento/premium opcional
+  // Primero: "a NAV", "a valor cuota", "a VC"
   const navReCruce = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navReCruce.test(text)) {
     navFlag = true;
-    // Detectar descuento/premium
-    const navCtxRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
-    const m = text.match(navCtxRe);
-    if (m) {
-      const num = parseFloat(m[2].replace(',', '.'));
-      if (!isNaN(num) && num > 0) {
-        const indicator = ((m[1]||'') + ' ' + (m[3]||'')).toLowerCase().trim();
-        if (/(-|menos|descuento)/i.test(indicator)) navDelta = -num;
-        else if (/(\+|m[áa]s|mas|premium)/i.test(indicator)) navDelta = num;
-      }
-    }
   } else {
     const precioM = text.match(/(?:a|precio)\s+(\d[\d.,]*)/i);
     if (precioM) {
@@ -5204,7 +5119,7 @@ function parseCruce(text) {
     type: 'cruce', nemo, nemoResult, nemoFound,
     precio, condicion, corredora,
     vendedores, compradores,
-    navFlag, navDelta,
+    navFlag,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -7347,32 +7262,15 @@ async function importarPulsoExcel(event) {
     if (subidas > 0) {
       try {
         const snapshot = extraerCuadroResumen(wb);
-        if (!snapshot) {
-          botMsg('⚠ No encontré la hoja "Cuadro resumen" en el Excel. Los valores cuota se guardaron, pero el dashboard del Pulso no.');
-        } else if (!snapshot.categorias?.length) {
-          botMsg(`⚠ La hoja "Cuadro resumen" existe pero no logré extraer categorías. Probablemente el formato del Excel cambió.`);
-        } else {
+        if (snapshot) {
           const {error: snapErr} = await SB.from('pulso_snapshot').upsert({
             id: 1, snapshot, actualizado_en: new Date().toISOString()
           }, {onConflict: 'id'});
-          if (snapErr) {
-            console.error('Error guardar snapshot:', snapErr);
-            let snapMsg = `⚠ No pude guardar el snapshot del Pulso: <code style="font-size:11px">${snapErr.message || snapErr.code}</code>`;
-            const errStr = JSON.stringify(snapErr).toLowerCase();
-            if (errStr.includes('does not exist') || errStr.includes('relation')) {
-              snapMsg += `<br><span style="color:var(--text2);font-size:11px">→ La tabla <code>pulso_snapshot</code> no existe. Corré el SQL primero.</span>`;
-            } else if (errStr.includes('row-level security') || errStr.includes('policy')) {
-              snapMsg += `<br><span style="color:var(--text2);font-size:11px">→ RLS bloqueando. Corré las policies en Supabase.</span>`;
-            }
-            botMsg(snapMsg);
-          } else {
-            console.log('Snapshot Pulso guardado OK', snapshot.categorias.length, 'categorías');
-            botMsg(`📈 Snapshot del dashboard guardado: <strong>${snapshot.categorias.length}</strong> categorías, <strong>${snapshot.categorias.reduce((s,c)=>s+c.fondos.length,0)}</strong> fondos · <strong>${snapshot.indices_macro.length}</strong> índices macro`);
-          }
+          if (snapErr) console.error('Error guardar snapshot:', snapErr);
+          else console.log('Snapshot Pulso guardado OK');
         }
       } catch(e) {
         console.error('Error extraer cuadro resumen:', e);
-        botMsg(`⚠ Error procesando Cuadro resumen: ${e.message}`);
       }
     }
     
@@ -7544,23 +7442,22 @@ async function renderPulso() {
     return;
   }
   
-  // Construir tabs (estilo corporativo: 'Todas las categorías' + tabs por cat + Macro)
+  // Construir tabs
   const tabs = [
-    {id: 'resumen', label: 'Todas'},
-    ...(PULSO_SNAPSHOT.categorias || []).map((c, idx) => ({id: 'cat-'+idx, label: c.nombre})),
-    {id: 'macro',   label: 'Macro'}
+    {id: 'resumen', label: 'Resumen'},
+    {id: 'macro',   label: 'Macro'},
+    ...(PULSO_SNAPSHOT.categorias || []).map((c, idx) => ({id: 'cat-'+idx, label: c.nombre}))
   ];
   
   tabsEl.innerHTML = tabs.map(t => {
     const isActive = t.id === PULSO_TAB_ACTIVE;
     return `<button onclick="selectPulsoTab('${t.id}')"
-      class="pulso-tab ${isActive?'active':''}"
-      style="padding:11px 16px;background:${isActive?'#1b2d5b':'transparent'};
-             color:${isActive?'#fff':'#7a869a'};
-             border:none;border-bottom:3px solid ${isActive?'#1b2d5b':'transparent'};
-             font-family:'Lato',sans-serif;font-size:11px;font-weight:700;cursor:pointer;
-             text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;
-             transition:all .15s;margin-bottom:-1px">${t.label}</button>`;
+      style="padding:9px 14px;background:${isActive?'var(--surface2)':'transparent'};
+             color:${isActive?'var(--accent)':'var(--text2)'};
+             border:none;border-bottom:2px solid ${isActive?'var(--accent)':'transparent'};
+             font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;
+             text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;
+             transition:all .15s">${t.label}</button>`;
   }).join('');
   
   if (PULSO_TAB_ACTIVE === 'resumen') {
@@ -7578,138 +7475,99 @@ function selectPulsoTab(tabId) {
   renderPulso();
 }
 
-// ─── Render estilo "Vizcaya PulsoVCC Dashboard" (paleta corporativa clara) ───
-
-const PULSO_CSS_VARS = `
-  --p-bg:#f0f2f5;
-  --p-surface:#ffffff;
-  --p-surface2:#f7f8fa;
-  --p-border:#dde1e8;
-  --p-text:#1a2233;
-  --p-muted:#7a869a;
-  --p-accent:#1b2d5b;
-  --p-accent-light:#e8edf5;
-  --p-pos:#1a7f4b;
-  --p-pos-bg:#eaf6f0;
-  --p-neg:#c0392b;
-  --p-neg-bg:#fdf0ef;
-`;
-
-function pulsoTdClass(v) {
-  // Devuelve string de estilos CSS inline
-  if (v == null || v === '') return 'color:var(--p-muted)';
-  if (typeof v === 'number') {
-    if (v > 0) return 'color:var(--p-pos);font-weight:700;background:var(--p-pos-bg)';
-    if (v < 0) return 'color:var(--p-neg);font-weight:700;background:var(--p-neg-bg)';
-    return 'color:var(--p-muted)';
-  }
-  const s = String(v).trim();
-  if (s.startsWith('+')) return 'color:var(--p-pos);font-weight:700;background:var(--p-pos-bg)';
-  if (s.startsWith('-')) return 'color:var(--p-neg);font-weight:700;background:var(--p-neg-bg)';
-  return 'color:var(--p-muted)';
+function pulsoCellClass(v) {
+  const c = classPctPulso(v);
+  if (c === 'pos') return 'color:var(--accent);font-weight:600;background:rgba(0,229,150,0.08)';
+  if (c === 'neg') return 'color:var(--venta);font-weight:600;background:rgba(255,80,80,0.08)';
+  return 'color:var(--text2)';
 }
 
-function pulsoPageWrap(innerHtml) {
-  // Wrap todo el contenido con el CSS aislado del dashboard original
-  return `<div style="${PULSO_CSS_VARS} background:var(--p-bg);padding:24px;border-radius:8px;color:var(--p-text);font-family:'Lato','Inter',sans-serif;font-size:13px;line-height:1.5">
-    ${innerHtml}
-  </div>`;
-}
-
-// Genera el bloque de subheader (azul oscuro con título categoría + columnas)
-function pulsoSubHeader(catNombre) {
-  return `
-    <tr><td colspan="9" style="background:var(--p-accent);padding:9px 16px;font-family:'Playfair Display','Lato',serif;font-size:13px;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:1.2px;text-align:left">${catNombre}</td></tr>
-    <tr>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:left;border-top:1px solid rgba(255,255,255,0.15);min-width:200px">Fondo</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">MTD</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">YTD</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">2025</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">2024</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Duración</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Liquidez</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Moneda</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">TAC</th>
-    </tr>
-  `;
-}
-
-function pulsoFila(f, idx) {
-  const bg = idx % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
-  const nemo = buscarNemoPorNombre(f.nombre);
-  const vc = nemo ? VALORES_CUOTA_CACHE[nemo] : null;
-  const nombreCell = nemo
-    ? `<div style="font-weight:600;color:var(--p-accent)">${f.nombre}</div>
-       <div style="font-size:10px;color:var(--p-muted);font-family:ui-monospace,Menlo,monospace;margin-top:1px">${nemo}${vc?' · '+vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4}):''}</div>`
-    : `<div style="font-weight:600;color:var(--p-accent)">${f.nombre}</div>`;
+function renderTablaFondos(fondos, mostrarPromedio=true) {
+  if (!fondos?.length) return '<div style="padding:20px;color:var(--text2);text-align:center">Sin fondos</div>';
   
-  return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)" onmouseover="this.style.background='var(--p-accent-light)'" onmouseout="this.style.background='${bg}'">
-    <td style="padding:10px 16px;text-align:left">${nombreCell}</td>
-    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.mtd)}">${fmtPctPulso(f.mtd)}</td>
-    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.ytd)}">${fmtPctPulso(f.ytd)}</td>
-    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.y2025)}">${fmtPctPulso(f.y2025)}</td>
-    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.y2024)}">${fmtPctPulso(f.y2024)}</td>
-    <td style="padding:10px 16px;text-align:center;color:var(--p-muted);font-size:12px">${f.duracion??'—'}</td>
-    <td style="padding:10px 16px;text-align:center;color:var(--p-muted);font-size:12px">${f.liquidez??'—'}</td>
-    <td style="padding:10px 16px;text-align:center"><span style="font-size:11px;font-weight:700;color:var(--p-accent);background:var(--p-accent-light);padding:3px 8px;border-radius:4px;letter-spacing:.5px">${f.moneda??'—'}</span></td>
-    <td style="padding:10px 16px;text-align:center;color:var(--p-muted);font-size:12px">${f.tac??'—'}</td>
-  </tr>`;
-}
-
-function pulsoFilaPromedio(fondos) {
-  const num = v => typeof v === 'number' ? v : null;
-  const vals = k => fondos.map(f=>num(f[k])).filter(v=>v!=null);
-  const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
-  const fmt = v => v == null ? '—' : fmtPctPulso(v);
-  return `<tr style="background:#e9ecef;border-top:2px solid #ced4da">
-    <td style="padding:10px 16px;text-align:left;font-weight:700;font-size:12px;color:var(--p-accent);text-transform:uppercase;letter-spacing:.8px">Promedio</td>
-    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('mtd')))}</td>
-    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('ytd')))}</td>
-    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('y2025')))}</td>
-    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('y2024')))}</td>
-    <td colspan="4"></td>
-  </tr>`;
+  const ultVC = (nombreExcel) => {
+    const nemo = buscarNemoPorNombre(nombreExcel);
+    if (!nemo) return null;
+    return VALORES_CUOTA_CACHE[nemo];
+  };
+  
+  const filas = fondos.map(f => {
+    const vc = ultVC(f.nombre);
+    const nemo = buscarNemoPorNombre(f.nombre);
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 12px">
+        <div style="color:var(--text);font-weight:600;font-size:12px">${f.nombre}</div>
+        ${nemo ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text2);margin-top:1px">${nemo}</div>` : ''}
+      </td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(f.mtd)}">${fmtPctPulso(f.mtd)}</td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(f.ytd)}">${fmtPctPulso(f.ytd)}</td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text2)">${fmtPctPulso(f.y2025)}</td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text2)">${fmtPctPulso(f.y2024)}</td>
+      <td style="padding:8px 12px;text-align:center;color:var(--text2);font-size:11px">${f.duracion??'—'}</td>
+      <td style="padding:8px 12px;text-align:center;color:var(--text2);font-size:10px">${f.liquidez??'—'}</td>
+      <td style="padding:8px 12px;text-align:center"><span style="font-family:var(--mono);font-size:9px;background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:3px">${f.moneda??'—'}</span></td>
+      <td style="padding:8px 12px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600">${vc?vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4}):'—'}</td>
+    </tr>`;
+  }).join('');
+  
+  let promHtml = '';
+  if (mostrarPromedio && fondos.length > 1) {
+    const num = v => typeof v === 'number' ? v : null;
+    const vals = k => fondos.map(f=>num(f[k])).filter(v=>v!=null);
+    const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
+    const fmt = v => v == null ? '—' : fmtPctPulso(v);
+    const a_mtd = avg(vals('mtd'));
+    const a_ytd = avg(vals('ytd'));
+    const a_25 = avg(vals('y2025'));
+    const a_24 = avg(vals('y2024'));
+    promHtml = `<tr style="background:var(--surface2);border-top:2px solid var(--accent)">
+      <td style="padding:9px 12px;font-weight:700;color:var(--accent);text-transform:uppercase;font-size:10px;letter-spacing:.05em">Promedio</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${fmt(a_mtd)}</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${fmt(a_ytd)}</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--text2);font-size:10px">${fmt(a_25)}</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--text2);font-size:10px">${fmt(a_24)}</td>
+      <td colspan="4"></td>
+    </tr>`;
+  }
+  
+  return `<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
+          <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Fondo</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">MTD</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">YTD</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">2025</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">2024</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Dur.</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Liquidez</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Mon.</th>
+          <th style="padding:9px 12px;text-align:right;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Último VC</th>
+        </tr>
+      </thead>
+      <tbody>${filas}${promHtml}</tbody>
+    </table>
+  </div>`;
 }
 
 function renderPulsoResumen() {
-  // Una sola tabla con sub-headers azules entre categorías (como el dashboard original)
-  let filasHtml = '';
-  for (const cat of (PULSO_SNAPSHOT.categorias || [])) {
-    filasHtml += pulsoSubHeader(cat.nombre);
-    cat.fondos.forEach((f, i) => { filasHtml += pulsoFila(f, i); });
+  let html = '';
+  if (PULSO_SNAPSHOT.titulo) {
+    html += `<div style="font-size:11px;color:var(--text2);font-family:var(--mono);margin-bottom:14px">// ${PULSO_SNAPSHOT.titulo}</div>`;
   }
-  
-  const tabla = `<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface)">
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tbody>${filasHtml}</tbody>
-    </table>
-  </div>`;
-  
-  return pulsoPageWrap(`
-    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Resumen Semanal</div>
-    <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">Todas las categorías</div>
-    ${tabla}
-  `);
+  for (const cat of (PULSO_SNAPSHOT.categorias || [])) {
+    html += `<div style="margin-bottom:24px">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">${cat.nombre}</div>
+      ${renderTablaFondos(cat.fondos, false)}
+    </div>`;
+  }
+  return html;
 }
 
 function renderPulsoCategoria(cat) {
-  if (!cat) return pulsoPageWrap('<div style="color:var(--p-muted)">Categoría no encontrada</div>');
-  
-  let filasHtml = pulsoSubHeader(cat.nombre);
-  cat.fondos.forEach((f, i) => { filasHtml += pulsoFila(f, i); });
-  if (cat.fondos.length > 1) filasHtml += pulsoFilaPromedio(cat.fondos);
-  
-  const tabla = `<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface)">
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tbody>${filasHtml}</tbody>
-    </table>
-  </div>`;
-  
-  return pulsoPageWrap(`
-    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">${cat.nombre}</div>
-    <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">${cat.fondos.length} fondos · Comité de Inversiones</div>
-    ${tabla}
-  `);
+  if (!cat) return '<div style="color:var(--text2)">Categoría no encontrada</div>';
+  return `<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:12px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em">// ${cat.nombre}</div>
+    ${renderTablaFondos(cat.fondos, true)}`;
 }
 
 function renderPulsoMacro() {
@@ -7717,54 +7575,49 @@ function renderPulsoMacro() {
   const r = PULSO_SNAPSHOT.rf_usa || [];
   const headersRF = PULSO_SNAPSHOT.rf_usa_headers || ['Cierre','Anterior','Actual'];
   
-  // Tabla índices macro
-  const headerMacro = `<tr>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:left">Índice</th>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">WTD</th>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">MTD</th>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">YTD</th>
-  </tr>`;
-  const filasMacro = m.map((idx, i) => {
-    const bg = i % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
-    return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)">
-      <td style="padding:10px 16px;font-weight:600;color:var(--p-accent)">${idx.nombre}</td>
-      <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.wtd)}">${fmtPctPulso(idx.wtd)}</td>
-      <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.mtd)}">${fmtPctPulso(idx.mtd)}</td>
-      <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.ytd)}">${fmtPctPulso(idx.ytd)}</td>
+  const filasMacro = m.map(i => `<tr style="border-bottom:1px solid var(--border)">
+    <td style="padding:9px 12px;color:var(--text);font-weight:600">${i.nombre}</td>
+    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.wtd)}">${fmtPctPulso(i.wtd)}</td>
+    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.mtd)}">${fmtPctPulso(i.mtd)}</td>
+    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.ytd)}">${fmtPctPulso(i.ytd)}</td>
+  </tr>`).join('');
+  
+  const filasRF = r.map(i => {
+    const vals = i.valores || [];
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:9px 12px;color:var(--text);font-weight:600">${i.nombre}</td>
+      ${vals.map(v => `<td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text)">${v==null?'—':v}</td>`).join('')}
     </tr>`;
   }).join('');
   
-  // Tabla RF USA
-  const headerRF = `<tr>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:left">Índice</th>
-    ${headersRF.map(h => `<th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">${h}</th>`).join('')}
-  </tr>`;
-  const filasRF = r.map((idx, i) => {
-    const bg = i % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
-    return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)">
-      <td style="padding:10px 16px;font-weight:600;color:var(--p-accent)">${idx.nombre}</td>
-      ${(idx.valores||[]).map(v => `<td style="padding:10px 16px;text-align:center;color:var(--p-text);font-family:ui-monospace,Menlo,monospace">${v==null?'—':v}</td>`).join('')}
-    </tr>`;
-  }).join('');
-  
-  return pulsoPageWrap(`
-    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Indicadores Macro</div>
-    <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">Índices globales y Renta Fija USA</div>
-    
-    <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface);margin-bottom:20px">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead>${headerMacro}</thead>
-        <tbody>${filasMacro}</tbody>
-      </table>
+  return `
+    <div style="margin-bottom:24px">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">// Índices Macro</div>
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
+            <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Índice</th>
+            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">WTD</th>
+            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">MTD</th>
+            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">YTD</th>
+          </tr></thead>
+          <tbody>${filasMacro}</tbody>
+        </table>
+      </div>
     </div>
-    
-    ${r.length ? `<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface)">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead>${headerRF}</thead>
-        <tbody>${filasRF}</tbody>
-      </table>
+    ${r.length ? `<div>
+      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">// Renta Fija USA</div>
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
+            <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Índice</th>
+            ${headersRF.map(h => `<th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${filasRF}</tbody>
+        </table>
+      </div>
     </div>` : ''}
-  `);
+  `;
 }
 
 // Lanzar la carga al iniciar (después de SB)
