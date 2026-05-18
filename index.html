@@ -804,6 +804,14 @@ tr:hover td{background:var(--surface2)}
           <div class="topbar-sub" id="topbar-sub"></div>
         </div>
         <div class="topbar-right" id="topbar-right-btns">
+          <button id="banner-pendientes" onclick="abrirPendientesGlobal()" 
+            style="display:none;background:rgba(255,80,80,0.15);border:1px solid var(--venta);color:var(--venta);
+                   padding:5px 10px;border-radius:var(--r);font-size:11px;font-family:var(--mono);font-weight:700;
+                   cursor:pointer;align-items:center;gap:6px;transition:all .15s"
+            onmouseover="this.style.background='rgba(255,80,80,0.25)'"
+            onmouseout="this.style.background='rgba(255,80,80,0.15)'">
+            🕓 <span id="banner-pendientes-count">0</span> pendientes
+          </button>
           <button class="btn sm" onclick="exportCSV()">↓ CSV</button>
           <button class="btn sm" onclick="document.getElementById('pulso-file-input').click()" title="Importar Excel del Pulso semanal">📊 Pulso</button>
           <input type="file" id="pulso-file-input" accept=".xlsx,.xlsm" style="display:none" onchange="importarPulsoExcel(event)">
@@ -881,6 +889,7 @@ tr:hover td{background:var(--surface2)}
 
           <!-- TABLE always visible -->
           <div class="table-wrap">
+            <div id="filtro-bar-o"></div>
             <div class="table-toolbar">
               <input class="table-search" placeholder="Buscar..." oninput="filtrar('tb-o',this.value)">
               <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="o-count">0 órdenes</span>
@@ -947,6 +956,7 @@ tr:hover td{background:var(--surface2)}
             </div>
           </div>
           <div class="table-wrap">
+            <div id="filtro-bar-a"></div>
             <div class="table-toolbar">
               <input class="table-search" placeholder="Buscar..." oninput="filtrar('tb-a',this.value)">
               <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="a-count">0 registros</span>
@@ -1723,6 +1733,7 @@ async function initApp(user) {
   
   await cargarClientes();
   await cargarOrdenes();
+  await cargarAportes();  // para que el banner de pendientes cuente todo
   await cargarConfigSupabase();
   await cargarComisionesDesdeBD();
   await loadBanqueros();
@@ -2552,13 +2563,23 @@ async function loadBanqueros() {
     }
   }
 }
+// Caches y filtros de email_estado
+let ORDENES_CACHE = [];
+let APORTES_CACHE = [];
+let FILTRO_EMAIL_ORD = 'todas';  // todas | pendiente | enviado | fallo
+let FILTRO_EMAIL_APO = 'todas';
+
 async function cargarOrdenes() {
   const { data } = await SB.from('ordenes').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
-  renderOrdenes(data||[]);
+  ORDENES_CACHE = data || [];
+  renderOrdenes(ORDENES_CACHE);
+  actualizarBannerPendientes();
 }
 async function cargarAportes() {
   const { data } = await SB.from('aportes').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
-  renderAportes(data||[]);
+  APORTES_CACHE = data || [];
+  renderAportes(APORTES_CACHE);
+  actualizarBannerPendientes();
 }
 async function cargarSaldos() {
   const { data } = await SB.from('saldos').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
@@ -2736,6 +2757,348 @@ function selCta(el, cta, corr, ctx, clienteRut) {
 // ═══════════════════════════════════════════════════════════
 // RENDER
 // ═══════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// PENDIENTES — banner global, editor de operaciones, reenvío manual
+// ═════════════════════════════════════════════════════════════════════════════
+
+function contarPendientesGlobal() {
+  let n = 0;
+  for (const r of ORDENES_CACHE) {
+    const corrKey = (r.corredora||'').toUpperCase();
+    if (!corredorasConfig[corrKey]) continue;
+    const estado = r.email_estado || (r.email_enviado ? 'enviado' : 'pendiente');
+    if (estado === 'pendiente' || estado === 'fallo') n++;
+  }
+  for (const r of APORTES_CACHE) {
+    const corrKey = (r.corredora||'').toUpperCase();
+    if (!corredorasConfig[corrKey]) continue;
+    const estado = r.email_estado || (r.email_enviado ? 'enviado' : 'pendiente');
+    if (estado === 'pendiente' || estado === 'fallo') n++;
+  }
+  return n;
+}
+
+function actualizarBannerPendientes() {
+  const banner = document.getElementById('banner-pendientes');
+  if (!banner) return;
+  const n = contarPendientesGlobal();
+  if (n > 0) {
+    banner.style.display = 'inline-flex';
+    document.getElementById('banner-pendientes-count').textContent = n;
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+// Abrir lista de pendientes (filtro = pendiente en la sección Órdenes por defecto)
+function abrirPendientesGlobal() {
+  // Llevar a Órdenes con filtro Pendientes
+  FILTRO_EMAIL_ORD = 'pendiente';
+  FILTRO_EMAIL_APO = 'pendiente';
+  showSection('ordenes', document.getElementById('nav-ordenes'));
+}
+
+// ───────── Editor de operación ─────────
+// Estado del modal
+let EDITOR_CTX = null;  // {tabla, id, row}
+
+async function abrirEditorOperacion(tabla, id) {
+  // Buscar la fila en cache
+  const cache = tabla === 'ordenes' ? ORDENES_CACHE : APORTES_CACHE;
+  let row = cache.find(r => r.id === id);
+  if (!row) {
+    // Recargar
+    const {data} = await SB.from(tabla).select('*').eq('id', id).single();
+    if (!data) { alert('No encontré la operación'); return; }
+    row = data;
+  }
+  EDITOR_CTX = {tabla, id, row, original: {...row}};
+  renderEditorModal();
+}
+
+function cerrarEditorModal() {
+  EDITOR_CTX = null;
+  const m = document.getElementById('editor-modal');
+  if (m) m.remove();
+}
+
+function renderEditorModal() {
+  cerrarEditorModal();
+  const {tabla, row} = EDITOR_CTX;
+  const isOrden = tabla === 'ordenes';
+  
+  const estado = row.email_estado || (row.email_enviado ? 'enviado' : 'pendiente');
+  const estadoLabel = estado === 'enviado' ? '✅ Enviado' : estado === 'fallo' ? '❌ Falló envío' : '🕓 Pendiente';
+  const estadoColor = estado === 'enviado' ? 'var(--accent)' : estado === 'fallo' ? 'var(--venta)' : 'var(--warn)';
+  
+  let fieldsHtml = '';
+  if (isOrden) {
+    fieldsHtml = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <div class="field"><label>Operación</label>
+          <select id="ed-operacion">
+            <option value="COMPRA"${row.operacion==='COMPRA'?' selected':''}>COMPRA</option>
+            <option value="VENTA"${row.operacion==='VENTA'?' selected':''}>VENTA</option>
+          </select>
+        </div>
+        <div class="field"><label>Nemo</label><input id="ed-nemo" type="text" value="${row.nemo||''}"></div>
+        <div class="field"><label>Corredora</label><input id="ed-corredora" type="text" value="${row.corredora||''}"></div>
+        <div class="field" style="grid-column:span 2"><label>Cliente</label><input id="ed-cliente" type="text" value="${(row.cliente||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>RUT</label><input id="ed-rut" type="text" value="${row.rut||''}"></div>
+        <div class="field"><label>Cuenta</label><input id="ed-cta" type="text" value="${row.cta||''}"></div>
+        <div class="field"><label>Cantidad</label><input id="ed-cantidad" type="number" value="${row.cantidad||''}"></div>
+        <div class="field"><label>Precio</label><input id="ed-precio" type="number" step="0.01" value="${row.precio||''}"></div>
+        <div class="field"><label>Condición</label>
+          <select id="ed-condicion">
+            <option value=""${!row.condicion?' selected':''}>—</option>
+            <option value="PH"${row.condicion==='PH'?' selected':''}>PH · Paga Hoy</option>
+            <option value="PM"${row.condicion==='PM'?' selected':''}>PM · Paga Mañana</option>
+            <option value="CN"${row.condicion==='CN'?' selected':''}>CN · Contado Normal</option>
+          </select>
+        </div>
+        <div class="field"><label>Moneda</label>
+          <select id="ed-moneda">
+            <option${row.moneda==='CLP'?' selected':''}>CLP</option>
+            <option${row.moneda==='USD'?' selected':''}>USD</option>
+            <option${row.moneda==='UF'?' selected':''}>UF</option>
+          </select>
+        </div>
+        <div class="field"><label>Comisión %</label><input id="ed-comision" type="number" step="0.01" value="${row.comision||''}"></div>
+      </div>
+    `;
+  } else {
+    // Aporte/Rescate
+    fieldsHtml = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <div class="field"><label>Instrucción</label>
+          <select id="ed-instruccion">
+            <option${row.instruccion==='Aporte'?' selected':''}>Aporte</option>
+            <option${row.instruccion==='Rescate'?' selected':''}>Rescate</option>
+            <option${row.instruccion==='Transferencia'?' selected':''}>Transferencia</option>
+            <option${row.instruccion==='Suscripción'?' selected':''}>Suscripción</option>
+          </select>
+        </div>
+        <div class="field" style="grid-column:span 2"><label>Cliente</label><input id="ed-cliente" type="text" value="${(row.cliente||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>RUT</label><input id="ed-rut" type="text" value="${row.rut||''}"></div>
+        <div class="field"><label>Cuenta</label><input id="ed-cta" type="text" value="${row.cta||''}"></div>
+        <div class="field"><label>Corredora</label><input id="ed-corredora" type="text" value="${row.corredora||''}"></div>
+        <div class="field" style="grid-column:span 2"><label>Fondo</label><input id="ed-fondo" type="text" value="${(row.fondo_mutuo||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Serie</label><input id="ed-serie" type="text" value="${row.serie||''}"></div>
+        <div class="field"><label>Monto</label><input id="ed-monto" type="number" value="${row.monto||''}"></div>
+        <div class="field" style="grid-column:span 2"><label>Forma de pago</label>
+          <select id="ed-forma-pago">
+            <option value=""${!row.forma_pago?' selected':''}>—</option>
+            <option${row.forma_pago==='Cheque'?' selected':''}>Cheque</option>
+            <option${row.forma_pago==='Transferencia bancaria'?' selected':''}>Transferencia bancaria</option>
+            <option${row.forma_pago==='Cargo en cuenta'?' selected':''}>Cargo en cuenta</option>
+            <option${row.forma_pago==='Vale vista'?' selected':''}>Vale vista</option>
+          </select>
+        </div>
+      </div>
+    `;
+  }
+  
+  const html = `
+    <div id="editor-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px"
+         onclick="if(event.target===this)cerrarEditorModal()">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:680px;width:100%;max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.6)">
+        <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px">
+          <div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em">// EDITAR ${isOrden?'ORDEN':'APORTE'}</div>
+            <div style="font-size:14px;color:var(--text);margin-top:3px">ID #${row.id} · <span style="color:${estadoColor};font-weight:700">${estadoLabel}</span></div>
+          </div>
+          <button onclick="cerrarEditorModal()" style="background:transparent;border:1px solid var(--border);color:var(--text2);width:28px;height:28px;border-radius:6px;font-size:14px;cursor:pointer">✕</button>
+        </div>
+        
+        <div style="padding:18px 22px">
+          ${fieldsHtml}
+        </div>
+        
+        <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;background:var(--surface2)">
+          <button onclick="eliminarDesdeEditor()" style="background:transparent;border:1px solid var(--venta);color:var(--venta);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:600">🗑 Eliminar</button>
+          <div style="display:flex;gap:8px">
+            <button onclick="cerrarEditorModal()" style="background:transparent;border:1px solid var(--border);color:var(--text2);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:600">Cancelar</button>
+            <button onclick="guardarCambiosEditor(false)" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:600">💾 Guardar</button>
+            <button onclick="guardarCambiosEditor(true)" style="background:var(--accent);border:1px solid var(--accent);color:var(--bg);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:700">${estado==='enviado'?'✉ Reenviar email':'💾 Guardar y ✉ enviar'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function leerEditorFields() {
+  const {tabla} = EDITOR_CTX;
+  if (tabla === 'ordenes') {
+    return {
+      operacion: document.getElementById('ed-operacion').value,
+      nemo: document.getElementById('ed-nemo').value.trim().toUpperCase(),
+      corredora: document.getElementById('ed-corredora').value.trim().toUpperCase(),
+      cliente: document.getElementById('ed-cliente').value.trim(),
+      rut: document.getElementById('ed-rut').value.trim(),
+      cta: document.getElementById('ed-cta').value.trim(),
+      cantidad: parseFloat(document.getElementById('ed-cantidad').value) || null,
+      precio: parseFloat(document.getElementById('ed-precio').value) || null,
+      condicion: document.getElementById('ed-condicion').value,
+      moneda: document.getElementById('ed-moneda').value,
+      comision: parseFloat(document.getElementById('ed-comision').value) || null,
+    };
+  } else {
+    return {
+      instruccion: document.getElementById('ed-instruccion').value,
+      cliente: document.getElementById('ed-cliente').value.trim(),
+      rut: document.getElementById('ed-rut').value.trim(),
+      cta: document.getElementById('ed-cta').value.trim(),
+      corredora: document.getElementById('ed-corredora').value.trim().toUpperCase(),
+      fondo_mutuo: document.getElementById('ed-fondo').value.trim(),
+      serie: document.getElementById('ed-serie').value.trim().toUpperCase(),
+      monto: parseFloat(document.getElementById('ed-monto').value) || null,
+      forma_pago: document.getElementById('ed-forma-pago').value,
+    };
+  }
+}
+
+async function guardarCambiosEditor(enviarEmail) {
+  if (!EDITOR_CTX) return;
+  const {tabla, id} = EDITOR_CTX;
+  const updates = leerEditorFields();
+  
+  // Validación mínima
+  if (!updates.rut) { alert('Falta RUT'); return; }
+  if (!updates.cliente) { alert('Falta cliente'); return; }
+  if (tabla === 'ordenes' && !updates.nemo) { alert('Falta nemo'); return; }
+  if (tabla === 'aportes' && !updates.fondo_mutuo) { alert('Falta fondo'); return; }
+  
+  // Update en BD
+  const {data, error} = await SB.from(tabla).update(updates).eq('id', id).select().single();
+  if (error) { alert('Error guardando: ' + error.message); return; }
+  
+  if (enviarEmail) {
+    // Enviar email
+    if (!outlookAccount) { alert('Conectá Outlook primero (Configuración → Outlook)'); return; }
+    const corrKey = (data.corredora||'').toUpperCase();
+    if (!corredorasConfig[corrKey]) { alert(`No hay email configurado para la corredora ${data.corredora}`); return; }
+    
+    const tipo = tabla === 'ordenes' ? 'orden' : 'aporte';
+    const r = await enviarEmailOutlook(data, tipo).catch(e => ({ok:false, msg:e.message}));
+    if (r.ok) {
+      await SB.from(tabla).update({email_enviado:true, email_estado:'enviado'}).eq('id', id);
+      botMsg(`✅ Cambios guardados y email enviado a ${data.corredora}`);
+    } else {
+      await SB.from(tabla).update({email_estado:'fallo'}).eq('id', id);
+      botMsg(`⚠ Cambios guardados pero el email falló: ${r.msg}`);
+    }
+  } else {
+    botMsg(`✅ Cambios guardados (sin enviar email)`);
+  }
+  
+  cerrarEditorModal();
+  // Refrescar tabla
+  if (tabla === 'ordenes') await cargarOrdenes();
+  else await cargarAportes();
+}
+
+async function eliminarDesdeEditor() {
+  if (!EDITOR_CTX) return;
+  if (!confirm('¿Eliminar esta operación? No se puede deshacer.')) return;
+  const {tabla, id} = EDITOR_CTX;
+  const {error} = await SB.from(tabla).delete().eq('id', id);
+  if (error) { alert('Error eliminando: ' + error.message); return; }
+  cerrarEditorModal();
+  botMsg(`🗑 Operación #${id} eliminada`);
+  if (tabla === 'ordenes') await cargarOrdenes();
+  else await cargarAportes();
+}
+
+
+// Si la fila tiene corredora configurada con email, el badge es clickeable
+// (abre modal de edición / reenvío).
+function emailBadgeHtml(row, tabla) {
+  const corrKey = (row.corredora||'').toUpperCase();
+  const tieneEmailDest = !!corredorasConfig[corrKey];
+  const estado = row.email_estado || (row.email_enviado ? 'enviado' : (tieneEmailDest ? 'pendiente' : 'sin_destino'));
+  
+  let icon = '', color = '', title = '';
+  let clickable = tieneEmailDest && (estado === 'pendiente' || estado === 'fallo' || estado === 'enviado');
+  
+  if (estado === 'enviado') {
+    icon = '✅'; color = 'var(--accent)'; title = 'Email enviado · click para reenviar';
+  } else if (estado === 'pendiente') {
+    icon = '🕓'; color = 'var(--warn)'; title = 'Email PENDIENTE · click para revisar y enviar';
+  } else if (estado === 'fallo') {
+    icon = '❌'; color = 'var(--venta)'; title = 'Email falló · click para reintentar';
+  } else {
+    icon = '·'; color = 'var(--text2)'; title = 'Sin email de destino';
+    clickable = false;
+  }
+  
+  const onclick = clickable ? `onclick="abrirEditorOperacion('${tabla}',${row.id})"` : '';
+  const cursor = clickable ? 'cursor:pointer' : 'cursor:default';
+  return `<span ${onclick} title="${title}" 
+    style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:24px;
+           border-radius:6px;background:var(--surface2);border:1px solid ${color};color:${color};
+           font-size:13px;font-weight:700;${cursor};transition:transform .1s"
+    onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">${icon}</span>`;
+}
+
+function aplicarFiltroEmail(data, filtro, tabla) {
+  if (filtro === 'todas') return data;
+  if (filtro === 'sin_destino') {
+    return data.filter(r => {
+      const corrKey = (r.corredora||'').toUpperCase();
+      return !corredorasConfig[corrKey];
+    });
+  }
+  return data.filter(r => {
+    const estado = r.email_estado || (r.email_enviado ? 'enviado' : 'pendiente');
+    return estado === filtro;
+  });
+}
+
+function contadoresEmail(data) {
+  const c = {todas:data.length, enviado:0, pendiente:0, fallo:0, sin_destino:0};
+  for (const r of data) {
+    const corrKey = (r.corredora||'').toUpperCase();
+    const tieneDest = !!corredorasConfig[corrKey];
+    if (!tieneDest) { c.sin_destino++; continue; }
+    const estado = r.email_estado || (r.email_enviado ? 'enviado' : 'pendiente');
+    if (c[estado] != null) c[estado]++;
+  }
+  return c;
+}
+
+function filtroEmailBar(cuentas, filtroActual, onClickFnName) {
+  const opts = [
+    {id:'todas', label:'Todas', count:cuentas.todas},
+    {id:'pendiente', label:'🕓 Pendientes', count:cuentas.pendiente},
+    {id:'enviado', label:'✅ Enviadas', count:cuentas.enviado},
+    {id:'fallo', label:'❌ Fallidas', count:cuentas.fallo},
+  ];
+  return `<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+    ${opts.map(o => {
+      const active = o.id === filtroActual;
+      return `<button onclick="${onClickFnName}('${o.id}')" 
+        style="padding:5px 10px;font-size:11px;font-family:var(--mono);font-weight:600;
+               background:${active?'var(--surface2)':'transparent'};
+               color:${active?'var(--accent)':'var(--text2)'};
+               border:1px solid ${active?'var(--accent)':'var(--border)'};
+               border-radius:6px;cursor:pointer;transition:all .15s">
+        ${o.label} <span style="opacity:.7">(${o.count})</span>
+      </button>`;
+    }).join('')}
+  </div>`;
+}
+
+function setFiltroOrdenes(f) {
+  FILTRO_EMAIL_ORD = f;
+  renderOrdenes(ORDENES_CACHE);
+}
+function setFiltroAportes(f) {
+  FILTRO_EMAIL_APO = f;
+  renderAportes(APORTES_CACHE);
+}
+
 function renderOrdenes(data) {
   const total=data.length, comp=data.filter(d=>d.operacion==='COMPRA').length, ven=data.filter(d=>d.operacion==='VENTA').length;
   const monto=data.reduce((a,d)=>a+(parseFloat(d.precio||0)*parseFloat(d.cantidad||0)),0);
@@ -2744,12 +3107,21 @@ function renderOrdenes(data) {
   document.getElementById('m-ven').textContent=ven;
   document.getElementById('m-monto').textContent='$'+Math.round(monto).toLocaleString('es-CL');
   document.getElementById('o-count').textContent=total+' órdenes';
+  
+  // Render filter bar above the table
+  const cuentas = contadoresEmail(data);
+  const filtroBarHost = document.getElementById('filtro-bar-o');
+  if (filtroBarHost) {
+    filtroBarHost.innerHTML = filtroEmailBar(cuentas, FILTRO_EMAIL_ORD, 'setFiltroOrdenes');
+  }
+  
+  // Aplicar filtro a los datos visibles
+  const visible = aplicarFiltroEmail(data, FILTRO_EMAIL_ORD, 'ordenes');
+  
   const tb=document.getElementById('tb-o');
-  if(!data.length){tb.innerHTML=`<tr><td colspan="13" class="empty">Sin órdenes hoy</td></tr>`;return;}
-  tb.innerHTML=data.map(o=>{
+  if(!visible.length){tb.innerHTML=`<tr><td colspan="13" class="empty">${data.length?'Sin órdenes con este filtro':'Sin órdenes hoy'}</td></tr>`;return;}
+  tb.innerHTML=visible.map(o=>{
     const montoTotal = (o.precio && o.cantidad) ? Math.round(o.precio * o.cantidad) : null;
-    const emailTitle = o.email_enviado ? '✉ Email enviado · click para reenviar' : 'Click para enviar email';
-    const emailClick = `reenviarEmail(${o.id},'${o.corredora||''}')`;
     return `<tr>
     <td><span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
     <td class="mono" style="font-weight:600">${o.nemo||'—'}</td>
@@ -2763,27 +3135,32 @@ function renderOrdenes(data) {
     <td>${o.condicion||'—'}</td>
     <td class="mono">${o.moneda||'CLP'}</td>
     <td><span class="executor-tag">${o.ejecutado_por||'—'}</span></td>
-    <td>
-      <button class="email-send-btn ${o.email_enviado?'sent':''}"
-        onclick="${emailClick}" title="${emailTitle}">
-        ${o.email_enviado?'✉':'✉?'}
-      </button>
-    </td>
+    <td style="text-align:center">${emailBadgeHtml(o,'ordenes')}</td>
     <td><button class="btn sm danger" onclick="eliminar('ordenes',${o.id},'tb-o')">✕</button></td>
   </tr>`;}).join('');
 }
 function renderAportes(data) {
   document.getElementById('a-count').textContent=data.length+' registros';
+  
+  // Filter bar
+  const cuentas = contadoresEmail(data);
+  const filtroBarHost = document.getElementById('filtro-bar-a');
+  if (filtroBarHost) {
+    filtroBarHost.innerHTML = filtroEmailBar(cuentas, FILTRO_EMAIL_APO, 'setFiltroAportes');
+  }
+  
+  const visible = aplicarFiltroEmail(data, FILTRO_EMAIL_APO, 'aportes');
+  
   const tb=document.getElementById('tb-a');
-  if(!data.length){tb.innerHTML=`<tr><td colspan="11" class="empty">Sin registros hoy</td></tr>`;return;}
-  tb.innerHTML=data.map(a=>`<tr>
+  if(!visible.length){tb.innerHTML=`<tr><td colspan="11" class="empty">${data.length?'Sin aportes con este filtro':'Sin registros hoy'}</td></tr>`;return;}
+  tb.innerHTML=visible.map(a=>`<tr>
     <td><span class="pill inst">${a.instruccion||'—'}</span></td>
     <td>${a.cliente}</td><td class="mono">${a.rut}</td><td class="mono">${a.cta||'—'}</td>
     <td>${a.fondo_mutuo||'—'}</td><td class="mono">${a.serie||'—'}</td>
     <td class="right mono">${a.monto?'$'+Number(a.monto).toLocaleString('es-CL'):'—'}</td>
     <td style="font-size:11px">${a.forma_pago||'—'}</td>
     <td><span class="executor-tag">${a.ejecutado_por||'—'}</span></td>
-    <td><span class="email-dot ${a.email_enviado?'sent':'unsent'}"></span></td>
+    <td style="text-align:center">${emailBadgeHtml(a,'aportes')}</td>
     <td><button class="btn sm danger" onclick="eliminar('aportes',${a.id},'tb-a')">✕</button></td>
   </tr>`).join('');
 }
@@ -7888,11 +8265,11 @@ async function renderPulso() {
     const isActive = t.id === PULSO_TAB_ACTIVE;
     return `<button onclick="selectPulsoTab('${t.id}')"
       class="pulso-tab ${isActive?'active':''}"
-      style="padding:11px 16px;background:${isActive?'#1b2d5b':'transparent'};
-             color:${isActive?'#fff':'#7a869a'};
-             border:none;border-bottom:3px solid ${isActive?'#1b2d5b':'transparent'};
-             font-family:'Lato',sans-serif;font-size:11px;font-weight:700;cursor:pointer;
-             text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;
+      style="padding:10px 14px;background:${isActive?'var(--surface2)':'transparent'};
+             color:${isActive?'var(--accent)':'var(--text2)'};
+             border:none;border-bottom:2px solid ${isActive?'var(--accent)':'transparent'};
+             font-family:var(--mono);font-size:11px;font-weight:600;cursor:pointer;
+             text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;
              transition:all .15s;margin-bottom:-1px">${t.label}</button>`;
   }).join('');
   
@@ -7914,18 +8291,18 @@ function selectPulsoTab(tabId) {
 // ─── Render estilo "Vizcaya PulsoVCC Dashboard" (paleta corporativa clara) ───
 
 const PULSO_CSS_VARS = `
-  --p-bg:#f0f2f5;
-  --p-surface:#ffffff;
-  --p-surface2:#f7f8fa;
-  --p-border:#dde1e8;
-  --p-text:#1a2233;
-  --p-muted:#7a869a;
-  --p-accent:#1b2d5b;
-  --p-accent-light:#e8edf5;
-  --p-pos:#1a7f4b;
-  --p-pos-bg:#eaf6f0;
-  --p-neg:#c0392b;
-  --p-neg-bg:#fdf0ef;
+  --p-bg:var(--bg);
+  --p-surface:var(--surface);
+  --p-surface2:var(--surface2);
+  --p-border:var(--border);
+  --p-text:var(--text);
+  --p-muted:var(--text2);
+  --p-accent:var(--accent);
+  --p-accent-light:rgba(0,229,150,0.08);
+  --p-pos:var(--accent);
+  --p-pos-bg:rgba(0,229,150,0.10);
+  --p-neg:var(--venta);
+  --p-neg-bg:rgba(255,80,80,0.10);
 `;
 
 function pulsoTdClass(v) {
@@ -7952,18 +8329,18 @@ function pulsoPageWrap(innerHtml) {
 // Genera el bloque de subheader (azul oscuro con título categoría + columnas)
 function pulsoSubHeader(catNombre) {
   return `
-    <tr><td colspan="10" style="background:var(--p-accent);padding:9px 16px;font-family:'Playfair Display','Lato',serif;font-size:13px;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:1.2px;text-align:left">${catNombre}</td></tr>
+    <tr><td colspan="10" style="background:var(--surface2);padding:10px 16px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.1em;text-align:left;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">// ${catNombre}</td></tr>
     <tr>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:left;border-top:1px solid rgba(255,255,255,0.15);min-width:200px">Fondo</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">MTD</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">YTD</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">2025</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">2024</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Dur.</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Liquidez</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Mon.</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">TAC</th>
-      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:right;border-top:1px solid rgba(255,255,255,0.15)">Último VC</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:left;border-bottom:1px solid var(--border);min-width:200px">Fondo</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">MTD</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">YTD</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">2025</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">2024</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">Dur.</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">Liquidez</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">Mon.</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">TAC</th>
+      <th style="background:var(--surface);color:var(--text2);font-weight:600;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:right;border-bottom:1px solid var(--border)">Último VC</th>
     </tr>
   `;
 }
@@ -7986,7 +8363,7 @@ function pulsoFila(f, idx) {
   const subNemo = nemo
     ? `<div style="font-size:10px;color:var(--p-muted);font-family:ui-monospace,Menlo,monospace;margin-top:1px">${nemo}</div>`
     : '';
-  const nombreCell = `<div style="font-weight:600;color:var(--p-accent)">${f.nombre}</div>${subNemo}`;
+  const nombreCell = `<div style="font-weight:600;color:var(--text)">${f.nombre}</div>${subNemo}`;
   
   const vcCell = vcValor != null
     ? `<div style="font-family:ui-monospace,Menlo,monospace;color:var(--p-accent);font-weight:700">${vcValor.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4})}</div>${vcFecha?`<div style="font-size:9px;color:var(--p-muted);margin-top:1px">${vcFecha.split('-').reverse().join('/')}</div>`:''}`
@@ -8011,7 +8388,7 @@ function pulsoFilaPromedio(fondos) {
   const vals = k => fondos.map(f=>num(f[k])).filter(v=>v!=null);
   const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
   const fmt = v => v == null ? '—' : fmtPctPulso(v);
-  return `<tr style="background:#e9ecef;border-top:2px solid #ced4da">
+  return `<tr style="background:var(--p-surface2);border-top:2px solid var(--p-accent)">
     <td style="padding:10px 16px;text-align:left;font-weight:700;font-size:12px;color:var(--p-accent);text-transform:uppercase;letter-spacing:.8px">Promedio</td>
     <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('mtd')))}</td>
     <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('ytd')))}</td>
@@ -8036,7 +8413,7 @@ function renderPulsoResumen() {
   </div>`;
   
   return pulsoPageWrap(`
-    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Resumen Semanal</div>
+    <div style="font-family:var(--mono);font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Resumen Semanal</div>
     <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">Todas las categorías</div>
     ${tabla}
   `);
@@ -8056,7 +8433,7 @@ function renderPulsoCategoria(cat) {
   </div>`;
   
   return pulsoPageWrap(`
-    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">${cat.nombre}</div>
+    <div style="font-family:var(--mono);font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">${cat.nombre}</div>
     <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">${cat.fondos.length} fondos · Comité de Inversiones</div>
     ${tabla}
   `);
@@ -8069,15 +8446,15 @@ function renderPulsoMacro() {
   
   // Tabla índices macro
   const headerMacro = `<tr>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:left">Índice</th>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">WTD</th>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">MTD</th>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">YTD</th>
+    <th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:9px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:left;border-bottom:1px solid var(--border)">Índice</th>
+    <th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:9px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">WTD</th>
+    <th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:9px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">MTD</th>
+    <th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:9px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">YTD</th>
   </tr>`;
   const filasMacro = m.map((idx, i) => {
     const bg = i % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
     return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)">
-      <td style="padding:10px 16px;font-weight:600;color:var(--p-accent)">${idx.nombre}</td>
+      <td style="padding:10px 16px;font-weight:600;color:var(--text)">${idx.nombre}</td>
       <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.wtd)}">${fmtPctPulso(idx.wtd)}</td>
       <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.mtd)}">${fmtPctPulso(idx.mtd)}</td>
       <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.ytd)}">${fmtPctPulso(idx.ytd)}</td>
@@ -8086,19 +8463,19 @@ function renderPulsoMacro() {
   
   // Tabla RF USA
   const headerRF = `<tr>
-    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:left">Índice</th>
-    ${headersRF.map(h => `<th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">${h}</th>`).join('')}
+    <th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:9px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:left;border-bottom:1px solid var(--border)">Índice</th>
+    ${headersRF.map(h => `<th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:9px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:center;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
   </tr>`;
   const filasRF = r.map((idx, i) => {
     const bg = i % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
     return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)">
-      <td style="padding:10px 16px;font-weight:600;color:var(--p-accent)">${idx.nombre}</td>
-      ${(idx.valores||[]).map(v => `<td style="padding:10px 16px;text-align:center;color:var(--p-text);font-family:ui-monospace,Menlo,monospace">${v==null?'—':v}</td>`).join('')}
+      <td style="padding:10px 16px;font-weight:600;color:var(--text)">${idx.nombre}</td>
+      ${(idx.valores||[]).map(v => `<td style="padding:10px 16px;text-align:center;color:var(--text);font-family:ui-monospace,Menlo,monospace">${v==null?'—':v}</td>`).join('')}
     </tr>`;
   }).join('');
   
   return pulsoPageWrap(`
-    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Indicadores Macro</div>
+    <div style="font-family:var(--mono);font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Indicadores Macro</div>
     <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">Índices globales y Renta Fija USA</div>
     
     <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface);margin-bottom:20px">
