@@ -7,6 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -351,6 +352,14 @@ tr:hover td{background:var(--surface2)}
 .cfg-title{font-size:12px;font-weight:600;margin-bottom:3px;font-family:var(--mono)}
 .cfg-sub{font-size:11px;color:var(--text2);margin-bottom:14px;line-height:1.5}
 .cfg-fields{display:flex;flex-direction:column;gap:8px}
+
+/* Switch toggle */
+.switch input + span::before {
+  position:absolute; content:""; height:18px; width:18px;
+  left:3px; top:3px; background:var(--text2); transition:.2s; border-radius:50%;
+}
+.switch input:checked + span { background:var(--accent-dim, rgba(0,229,150,.2)); border-color:var(--accent) }
+.switch input:checked + span::before { transform:translateX(24px); background:var(--accent) }
 .corredora-row{
   display:flex;align-items:center;gap:6px;
   padding:5px 8px;background:var(--surface2);
@@ -1193,6 +1202,24 @@ tr:hover td{background:var(--surface2)}
               </div>
             </div>
             <div class="cfg-card">
+              <div class="cfg-title">// EMAIL · AUTOMÁTICO</div>
+              <div class="cfg-sub">Si está activo, los emails se envían automáticamente al confirmar cada operación. Si está inactivo, las operaciones quedan como <strong>pendientes</strong> y la encargada las revisa antes de enviar.</div>
+              <div class="cfg-fields">
+                <div style="display:flex;align-items:center;gap:14px;padding:8px 0">
+                  <label class="switch" style="position:relative;display:inline-block;width:50px;height:26px;flex-shrink:0">
+                    <input type="checkbox" id="cfg-email-auto" onchange="toggleEmailAutomatico(this.checked)" style="opacity:0;width:0;height:0">
+                    <span id="cfg-email-auto-slider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--surface2);border:1px solid var(--border2);transition:.2s;border-radius:26px"></span>
+                  </label>
+                  <div style="flex:1">
+                    <div id="cfg-email-auto-label" style="font-size:12px;font-weight:600;color:var(--text)">Email automático: <span id="cfg-email-auto-status" style="color:var(--warn)">DESACTIVADO</span></div>
+                    <div style="font-size:10px;color:var(--text2);margin-top:2px">Cuando confirmes una operación, podrás activar el envío sólo para esa.</div>
+                  </div>
+                </div>
+                <span class="status-msg" id="cfg-email-auto-msg"></span>
+              </div>
+            </div>
+
+            <div class="cfg-card">
               <div class="cfg-title">// CORREDORAS · EMAILS</div>
               <div class="cfg-sub">Emails de destino por corredora para envío automático.</div>
               <div class="cfg-fields">
@@ -1678,8 +1705,11 @@ async function initApp(user) {
   const nombre = (bk?.nombre || user.email.split('@')[0]).trim();
   const rol    = (bk?.rol    || 'banquero').trim().toLowerCase();
   const ini    = nombre.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
-  CURRENT_USER = { id: user.id, email: user.email, nombre, rol, iniciales: ini, bk_id: bk?.id };
-  console.log('[Auth] Usuario cargado:', nombre, '| rol:', rol, '| estado:', bk?.estado);
+  CURRENT_USER = { 
+    id: user.id, email: user.email, nombre, rol, iniciales: ini, bk_id: bk?.id,
+    email_automatico: bk?.email_automatico === true  // default false
+  };
+  console.log('[Auth] Usuario cargado:', nombre, '| rol:', rol, '| estado:', bk?.estado, '| email auto:', CURRENT_USER.email_automatico);
   
   // Update UI
   document.getElementById('sb-avatar').textContent = ini;
@@ -2224,6 +2254,15 @@ async function enviarEmailMultiple(rows, corredora) {
   if (r.ok||r.status===202) return {ok:true};
   const err=await r.json().catch(()=>({}));
   return {ok:false, msg:err.error?.message||`HTTP ${r.status}`};
+}
+
+// Decide si enviar email automáticamente al confirmar una operación.
+// Si parsed.enviarEmailOverride está seteado (true/false), respeta eso.
+// Sino respeta CURRENT_USER.email_automatico.
+function debeEnviarEmailAuto(parsed) {
+  if (parsed && parsed.enviarEmailOverride === true)  return true;
+  if (parsed && parsed.enviarEmailOverride === false) return false;
+  return CURRENT_USER?.email_automatico === true;
 }
 
 async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
@@ -3247,13 +3286,37 @@ function parseMontoNatural(text) {
 // Extracts {cantidad, precio, monto} from natural language
 // Strategy: strip noise first, then identify each number's role by context
 function extractCantidadYPrecio(text) {
-  let cantidad = null, precio = null, monto = null, navFlag = false;
+  let cantidad = null, precio = null, monto = null, navFlag = false, navDelta = 0;
 
   // Step 0: detectar "a NAV", "a valor cuota", "a vc", "al valor cuota" → flag para resolver después
+  // También capturar descuento/premium: "a NAV con 0,1 descuento" / "a NAV -0,1" / "a NAV +0,2"
   const navRe = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navRe.test(text)) {
     navFlag = true;
-    text = text.replace(navRe, ''); // remove para no estorbar parseo
+    
+    // Buscar descuento/premium DESPUÉS de NAV
+    // Formatos: "NAV con 0,1 descuento", "NAV menos 0,1", "NAV -0,1", "NAV con descuento 0,1", "NAV +0,2", "NAV mas 0,1", "NAV con 0,2 premium"
+    const navContextRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
+    const m = text.match(navContextRe);
+    if (m) {
+      const num = parseFloat(m[2].replace(',', '.'));
+      if (!isNaN(num) && num > 0) {
+        // Determinar signo
+        const pre = (m[1]||'').toLowerCase().trim();
+        const post = (m[4]||'').toLowerCase().trim();
+        const indicator = pre || post;
+        if (indicator) {
+          const isNeg = /^(-|menos|descuento)/i.test(indicator);
+          const isPos = /^(\+|m[áa]s|mas|premium)/i.test(indicator);
+          if (isNeg) navDelta = -num;
+          else if (isPos) navDelta = num;
+        }
+      }
+    }
+    
+    // Eliminar todo el bloque NAV+descuento/premium del texto para no estorbar
+    const navRemoveRe = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(?:\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(?:\d+[.,]?\d*\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(?:descuento|premium|menos|m[áa]s|mas|\+|-)?)?/i;
+    text = text.replace(navRemoveRe, ' ').replace(/\s+/g, ' ').trim();
   }
 
   // Step 1: mask non-financial numbers so they don't bleed into parsing
@@ -3309,7 +3372,7 @@ function extractCantidadYPrecio(text) {
     precio = nums[0];
   }
 
-  return {cantidad, precio, monto, navFlag};
+  return {cantidad, precio, monto, navFlag, navDelta};
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3745,17 +3808,37 @@ function parseOrden(text, forceOp) {
   // Detectar y eliminar "a NAV" / "a valor cuota" / "a VC" del texto global
   // antes de cualquier parsing, para que no interfiera con cliente/nemo
   let navFlagGlobal = false;
+  let navDeltaGlobal = 0;
   const navReGlobal = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navReGlobal.test(text)) {
     navFlagGlobal = true;
-    text = text.replace(navReGlobal, ' ').replace(/\s+/g,' ').trim();
+    
+    // Detectar descuento/premium ANTES de borrar
+    const navCtxRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
+    const m = text.match(navCtxRe);
+    if (m) {
+      const num = parseFloat(m[2].replace(',', '.'));
+      if (!isNaN(num) && num > 0) {
+        const indicator = ((m[1]||'') + ' ' + (m[3]||'')).toLowerCase().trim();
+        if (/^(-|menos|descuento)/i.test(indicator) || / (-|menos|descuento)/.test(indicator)) {
+          navDeltaGlobal = -num;
+        } else if (/^(\+|m[áa]s|mas|premium)/i.test(indicator) || / (\+|m[áa]s|mas|premium)/.test(indicator)) {
+          navDeltaGlobal = num;
+        }
+      }
+    }
+    
+    // Eliminar el bloque entero NAV + descuento del texto
+    const navRemove = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(?:\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(?:\d+[.,]?\d*\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(?:descuento|premium|menos|m[áa]s|mas|\+|-)?)?/i;
+    text = text.replace(navRemove, ' ').replace(/\s+/g,' ').trim();
   }
   
   const op = forceOp || (/\b(VENTA|VENDER|VENDO)\b/i.test(text) ? 'VENTA' : 'COMPRA');
 
-  const {cantidad, precio, monto, navFlag} = extractCantidadYPrecio(text);
+  const {cantidad, precio, monto, navFlag, navDelta} = extractCantidadYPrecio(text);
   // Si lo detectamos arriba, propagamos
   const navFinalFlag = navFlag || navFlagGlobal;
+  const navFinalDelta = navDelta || navDeltaGlobal;
   let condicion = '';
   const upT = text.toUpperCase();
   if (/\bPH\b/.test(upT) || /\b(paga\s+hoy|pagahoy)\b/i.test(text))       condicion = 'PH';
@@ -3807,6 +3890,7 @@ function parseOrden(text, forceOp) {
     rut:     clientResult?.rut    || '',
     clienteResult: clientResult,
     navFlag: navFinalFlag,
+    navDelta: navFinalDelta,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -3985,10 +4069,24 @@ function checkMissingAndConfirm(parsed) {
   if (parsed.type === 'orden' && parsed.navFlag && (!parsed.precio || Number(parsed.precio) <= 0) && parsed.nemo) {
     const vc = getValorCuotaNAV(parsed.nemo);
     if (vc) {
-      parsed.precio = vc.valor;
+      const navBase = vc.valor;
+      const delta = parsed.navDelta || 0;
+      // delta es % (ej: 0.1 = 0.1%); aplicar como multiplicador
+      const precioFinal = navBase * (1 + delta / 100);
+      // Redondear a 2 decimales
+      parsed.precio = Math.round(precioFinal * 100) / 100;
       parsed.navFlag = false;
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
-      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
+      const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
+      const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
+      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
+      if (delta !== 0) {
+        const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
+        mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
+      } else {
+        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
+      }
+      botMsg(mensaje);
     } else {
       botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
       chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4324,10 +4422,23 @@ function continuarFlujoCruce(parsed) {
   if (parsed.navFlag && !parsed.precio && parsed.nemo) {
     const vc = getValorCuotaNAV(parsed.nemo);
     if (vc) {
-      parsed.precio = vc.valor;
+      const navBase = vc.valor;
+      const delta = parsed.navDelta || 0;
+      const precioFinal = navBase * (1 + delta / 100);
+      // Redondear a 2 decimales
+      parsed.precio = Math.round(precioFinal * 100) / 100;
       parsed.navFlag = false;
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
-      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
+      const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
+      const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
+      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
+      if (delta !== 0) {
+        const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
+        mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
+      } else {
+        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
+      }
+      botMsg(mensaje);
     } else {
       botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
       chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4400,36 +4511,80 @@ function parseAporte(text, forceInstruccion) {
   const monto = montoM ? parseMontoNatural(montoM[0])
     : (() => { const n = text.match(/\b(\d[\d.,]*)\b/); return n ? parseMontoNatural(n[1]) : null; })();
 
-  // Fondo: "del enfoque", "fondo BTG LIQUIDEZ", "al BTG", etc.
+  // ── FONDO (nombre completo) ─────────────────────────────────
+  // Los aportes/rescates son siempre por NOMBRE COMPLETO del fondo mutuo.
+  // Estrategia: 
+  //   1. Detectar el conector "al/del/en/fondo" + capturar el span hasta marcadores claros
+  //   2. Marcadores de fin: "para [Nombre]", " a [Nombre]" (con N mayúscula), "rut", "cta", "cuenta", "via", "serie ", "por ", final
+  //   3. Limpiar palabras de cierre que se hayan colado
+  //   4. Si tenemos FONDOS_MUTUOS_NOMBRES (del Excel del Pulso), priorizar match con esos
+  
   let fondo = '';
-  const fondoPatterns = [
-    /(?:fondo|fm|fdo|del?|al?)\s+([A-ZÁÉÍÓÚ][A-ZÁÉÍÓÚ\s\.]+?)(?:\s+(?:serie|rut|cta|cuenta|por|a|\d)|$)/i,
-    /(?:en|de)\s+([A-ZÁÉÍÓÚ][A-ZÁÉÍÓÚ\s]{3,})(?:\s+(?:por|a|rut|cta)|$)/i,
-  ];
-  for (const re of fondoPatterns) {
-    const m = text.match(re);
-    if (m && m[1].trim().length > 2) { fondo = m[1].trim().toUpperCase(); break; }
-  }
-
   let serie = '';
-  const serieM = text.match(/serie\s+([A-Z0-9\-]+)/i);
+  let formaPago = '';
+  
+  // Detectar serie explícita ANTES para sacarla del span del fondo
+  const serieM = text.match(/\bserie\s+([A-Z0-9\-]+)/i);
   if (serieM) serie = serieM[1].toUpperCase();
-
+  
+  // Detectar forma de pago explícita
+  if (/transferencia\s+bancaria|trans\.?\s+banc/i.test(text))     formaPago = 'Transferencia bancaria';
+  else if (/v[ií]a\s+(?:cheque|cheq)/i.test(text))                formaPago = 'Cheque';
+  else if (/v[ií]a\s+(?:cargo|cargocta)/i.test(text))             formaPago = 'Cargo en cuenta';
+  else if (/v[ií]a\s+(?:vale\s*vista|valevista)/i.test(text))     formaPago = 'Vale vista';
+  else if (/v[ií]a\s+transferencia/i.test(text))                  formaPago = 'Transferencia bancaria';
+  else if (/\bcheque\b/i.test(text))                              formaPago = 'Cheque';
+  else if (/\bcargo\s+(?:en\s+)?(?:cuenta|cta)/i.test(text))      formaPago = 'Cargo en cuenta';
+  else if (/\bvale\s*vista\b|\bvalevista\b/i.test(text))          formaPago = 'Vale vista';
+  
+  // Captura el span del fondo desde "al/del/fondo/en" hasta marcador de fin
+  // Marcadores de fin (en orden de prioridad):
+  //   - " a [letra mayúscula]" (cliente) — "a mario meza"
+  //   - " para [cualquier]" — "para Juan"
+  //   - serie/rut/cta/cuenta/via/por (palabras clave)
+  //   - fin de string
+  const fondoRe = /(?:^|\s)(?:al?|del?|fondo|fm|fdo|en)\s+([A-Z][A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ\s\.\-\(\)]+?)(?=\s+(?:a|para)\s+[A-ZÁÉÍÓÚ]|\s+(?:serie|rut|cta|cuenta|v[ií]a|por|cheque|cargo|valevista|vale\s+vista|transferencia)\b|\s*$)/i;
+  const fondoM = text.match(fondoRe);
+  if (fondoM && fondoM[1].trim().length > 2) {
+    fondo = fondoM[1].trim();
+    // Normalizar espacios
+    fondo = fondo.replace(/\s+/g, ' ');
+  }
+  
+  // Si encontramos algo, intentar matchear con la lista oficial del Excel del Pulso
+  if (fondo && typeof FONDOS_MUTUOS_NOMBRES !== 'undefined' && FONDOS_MUTUOS_NOMBRES.length) {
+    const matched = matchFondoMutuo(fondo);
+    if (matched) fondo = matched;
+  }
+  
+  // Cuenta
   let cta = '';
   const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
   if (ctaM) cta = ctaM[1];
 
-  // Corredora para aportes (para saber a quién enviar)
+  // ── Corredora ───────────────────────────────────────────────
+  // IMPORTANTE: no detectar corredora desde palabras que están DENTRO del nombre del fondo.
+  // Excluir el span del fondo antes de buscar corredoras.
   let corredora = '';
   const KNOWN_BROKERS = ['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY','VALUES','RENTA4','MBI','LV','LC'];
+  
+  // Primero: corredora explícita ("por LV", "via MBI", "corredora SMB")
   const corrExpl = text.match(/(?:por|v[ií]a|corredora)\s+([A-Z]{2,10})/i);
-  if (corrExpl) corredora = corrExpl[1].toUpperCase();
-  else { for (const k of KNOWN_BROKERS) { if (text.toUpperCase().includes(k)) { corredora=k; break; } } }
-
-  let formaPago = '';
-  if (/transferencia bancaria/i.test(text)) formaPago = 'Transferencia bancaria';
-  else if (/cargo/i.test(text))             formaPago = 'Cargo en cuenta';
-  else if (/cheque/i.test(text))            formaPago = 'Cheque';
+  if (corrExpl) {
+    corredora = corrExpl[1].toUpperCase();
+  } else {
+    // Sacar el span del fondo del texto antes de buscar broker
+    let textSinFondo = text;
+    if (fondo) {
+      const fondoEscaped = fondo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      textSinFondo = text.replace(new RegExp(fondoEscaped, 'i'), '');
+    }
+    const upperSF = textSinFondo.toUpperCase();
+    for (const k of KNOWN_BROKERS) {
+      // Match con word boundary para evitar matchear "BTG" dentro de palabras
+      if (new RegExp('\\b'+k+'\\b').test(upperSF)) { corredora = k; break; }
+    }
+  }
 
   const clientResult = resolveCliente(text);
   const parsed = {
@@ -4476,7 +4631,7 @@ function checkMissingAporte(parsed) {
   }
   if (!parsed.fondo) {
     chatContext = {state:'await_missing_aporte', field:'fondo', parsed};
-    botMsg(`¿A qué fondo es el ${parsed.instruccion.toLowerCase()}? (ej: <em>BTG LIQUIDEZ</em>, <em>BICE DEUDA</em>)`);
+    botMsg(`¿A qué fondo es el ${parsed.instruccion.toLowerCase()}? (ej: <em>FFMM BTG Renta Global</em>, <em>FFMM LV Ahorro Corporativo</em>)`);
     return;
   }
   if (!parsed.cta && parsed.clienteResult?.cliente) {
@@ -4499,6 +4654,33 @@ function checkMissingAporte(parsed) {
       if (!parsed.corredora && cuentas[0].corredora) parsed.corredora = cuentas[0].corredora;
     }
   }
+  // ── Forma de pago: si no se especificó, preguntar ────────────────
+  if (!parsed.formaPago) {
+    chatContext = {state:'await_forma_pago_aporte', parsed};
+    botMsg(`¿Cuál es la forma de pago?`,
+      `<div class="alias-suggestion" style="margin-top:6px">
+        <div class="alias-sug-title">Seleccioná forma de pago</div>
+        <div class="alias-sug-opts">
+          <button class="alias-opt" onclick="selectFormaPagoBtn('Cheque')">Cheque</button>
+          <button class="alias-opt" onclick="selectFormaPagoBtn('Transferencia bancaria')">Transferencia</button>
+          <button class="alias-opt" onclick="selectFormaPagoBtn('Cargo en cuenta')">Cargo en cuenta</button>
+          <button class="alias-opt" onclick="selectFormaPagoBtn('Vale vista')">Vale vista</button>
+        </div>
+      </div>`);
+    return;
+  }
+  pendingOrder = parsed;
+  chatContext  = {state:'await_confirm'};
+  showParsedConfirm(parsed);
+}
+
+// Handler del botón forma de pago
+function selectFormaPagoBtn(formaPago) {
+  if (!chatContext?.parsed) return;
+  const parsed = chatContext.parsed;
+  parsed.formaPago = formaPago;
+  botMsg(`✓ Forma de pago: <strong>${formaPago}</strong>`);
+  chatContext = null;
   pendingOrder = parsed;
   chatContext  = {state:'await_confirm'};
   showParsedConfirm(parsed);
@@ -4892,10 +5074,22 @@ function parseCruce(text) {
   // ── Precio ────────────────────────────────────────────────
   let precio = null;
   let navFlag = false;
-  // Primero: "a NAV", "a valor cuota", "a VC"
+  let navDelta = 0;
+  // Primero: "a NAV" con descuento/premium opcional
   const navReCruce = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navReCruce.test(text)) {
     navFlag = true;
+    // Detectar descuento/premium
+    const navCtxRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
+    const m = text.match(navCtxRe);
+    if (m) {
+      const num = parseFloat(m[2].replace(',', '.'));
+      if (!isNaN(num) && num > 0) {
+        const indicator = ((m[1]||'') + ' ' + (m[3]||'')).toLowerCase().trim();
+        if (/(-|menos|descuento)/i.test(indicator)) navDelta = -num;
+        else if (/(\+|m[áa]s|mas|premium)/i.test(indicator)) navDelta = num;
+      }
+    }
   } else {
     const precioM = text.match(/(?:a|precio)\s+(\d[\d.,]*)/i);
     if (precioM) {
@@ -5119,7 +5313,7 @@ function parseCruce(text) {
     type: 'cruce', nemo, nemoResult, nemoFound,
     precio, condicion, corredora,
     vendedores, compradores,
-    navFlag,
+    navFlag, navDelta,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -5339,6 +5533,19 @@ function showParsedConfirm(p) {
     ].filter(Boolean);
   }
 
+  // Si email automático está OFF y la operación tendría email, mostrar checkbox de override
+  const emailAutoOff = CURRENT_USER?.email_automatico !== true;
+  let overrideHtml = '';
+  if (emailAutoOff && (p.type === 'orden' || p.type === 'aporte' || p.type === 'cruce') && p.corredora) {
+    overrideHtml = `
+      <div class="chat-confirm-row" style="margin-top:6px;background:var(--surface2);padding:8px 10px;border-radius:6px;border:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text);cursor:pointer;width:100%">
+          <input type="checkbox" id="chk-send-email-now" style="accent-color:var(--accent);transform:scale(1.1)">
+          <span><strong>Enviar email ahora</strong> · <span style="color:var(--text2)">tu config tiene email automático OFF, esta op quedaría pendiente</span></span>
+        </label>
+      </div>`;
+  }
+  
   const html = `<div class="chat-confirm">
     <div class="chat-confirm-title" style="${colorStyle}">${titleLabel}</div>
     ${rows.map(([k,v])=>`
@@ -5346,13 +5553,23 @@ function showParsedConfirm(p) {
         <span class="chat-confirm-key">${k}</span>
         <span class="chat-confirm-val mono">${v}</span>
       </div>`).join('')}
+    ${overrideHtml}
     <div class="chat-confirm-actions">
-      <button class="chat-confirm-btn confirm" onclick="handleChatInput('si')">✓ Confirmar</button>
+      <button class="chat-confirm-btn confirm" onclick="confirmarConOverride()">✓ Confirmar</button>
       <button class="chat-confirm-btn cancel"  onclick="handleChatInput('no')">✕ Cancelar</button>
     </div>
   </div>`;
 
   botMsg('¿Confirmar esta instrucción?', html);
+}
+
+// Captura el override del checkbox y dispara la confirmación
+function confirmarConOverride() {
+  const chk = document.getElementById('chk-send-email-now');
+  if (chk && pendingOrder) {
+    pendingOrder.enviarEmailOverride = chk.checked ? true : false;
+  }
+  handleChatInput('si');
 }
 
 function showAliasSuggestion(raw, candidates, fondoCandidates) {
@@ -5438,22 +5655,37 @@ async function confirmarPendingOrder() {
         if (!k || !corredorasConfig[k]) continue;
         (porCorredora[k] = porCorredora[k] || []).push(row);
       }
-      const enviados = [];
-      for (const [corr, rows] of Object.entries(porCorredora)) {
-        if (rows.length === 1) {
-          // una sola → email normal
-          const r = await enviarEmailOutlook(rows[0],'orden').catch(()=>({ok:false}));
-          if (r.ok) { await SB.from('ordenes').update({email_enviado:true}).eq('id',rows[0].id); enviados.push(corr); }
-        } else {
-          // varias mismo corredor → consolidado
-          const r = await enviarEmailMultiple(rows, corr).catch(()=>({ok:false}));
-          if (r.ok) {
-            for (const row of rows) await SB.from('ordenes').update({email_enviado:true}).eq('id',row.id);
-            enviados.push(`${corr} (${rows.length})`);
+      
+      if (!debeEnviarEmailAuto(p)) {
+        // No enviar: marcar todas como pendiente
+        const totalPend = Object.values(porCorredora).reduce((s,arr)=>s+arr.length,0);
+        for (const rows of Object.values(porCorredora)) {
+          for (const row of rows) await SB.from('ordenes').update({email_estado:'pendiente'}).eq('id',row.id);
+        }
+        emailsMsg = totalPend > 0 ? ` · 🕓 <strong>${totalPend} emails pendientes</strong>` : '';
+      } else {
+        const enviados = [];
+        for (const [corr, rows] of Object.entries(porCorredora)) {
+          if (rows.length === 1) {
+            const r = await enviarEmailOutlook(rows[0],'orden').catch(()=>({ok:false}));
+            if (r.ok) { 
+              await SB.from('ordenes').update({email_enviado:true, email_estado:'enviado'}).eq('id',rows[0].id); 
+              enviados.push(corr); 
+            } else {
+              await SB.from('ordenes').update({email_estado:'fallo'}).eq('id',rows[0].id);
+            }
+          } else {
+            const r = await enviarEmailMultiple(rows, corr).catch(()=>({ok:false}));
+            if (r.ok) {
+              for (const row of rows) await SB.from('ordenes').update({email_enviado:true, email_estado:'enviado'}).eq('id',row.id);
+              enviados.push(`${corr} (${rows.length})`);
+            } else {
+              for (const row of rows) await SB.from('ordenes').update({email_estado:'fallo'}).eq('id',row.id);
+            }
           }
         }
+        if (enviados.length) emailsMsg = ` · ✉ ${enviados.join(', ')}`;
       }
-      if (enviados.length) emailsMsg = ` · ✉ ${enviados.join(', ')}`;
     }
     
     botMsg(`✅ Bloque guardado — ${guardadas} operaciones${fallidas?' · '+fallidas+' fallidas':''}${emailsMsg}`);
@@ -5517,10 +5749,26 @@ async function confirmarPendingOrder() {
       
       data.necesita_ok = !!necesitaOk;
       data.cc_banqueros = p.ccBanqueros?.emails || [];
+      
+      // Decidir si enviar email automáticamente
+      if (!debeEnviarEmailAuto(p)) {
+        // No mandar: dejar como pendiente
+        await SB.from('ordenes').update({email_estado:'pendiente'}).eq('id',data.id);
+        const noEnc = p.ccBanqueros?.noEncontrados || [];
+        const warnNoEnc = noEnc.length ? ` ⚠ No encontré a: ${noEnc.join(', ')} (no copiado)` : '';
+        const comisionMsg = row.comision 
+          ? ` · Com ${p.tasaComision}%+IVA → ${p.cantidad.toLocaleString('es-CL')} cuotas (era ${p.cantidadOriginal?.toLocaleString('es-CL')||'—'})`
+          : '';
+        botMsg(`✅ Orden guardada${comisionMsg} · 🕓 <strong>email pendiente</strong> (revisar antes de enviar)${warnNoEnc}`);
+        if (isActive('ordenes')) await cargarOrdenes();
+        else showSection('ordenes', document.querySelector('.nav-item'));
+        return;
+      }
+      
       const r = await enviarEmailOutlook(data,'orden').catch(e=>({ok:false,msg:e.message}));
       let emailMsg = '';
       if (r.ok) {
-        await SB.from('ordenes').update({email_enviado:true}).eq('id',data.id);
+        await SB.from('ordenes').update({email_enviado:true, email_estado:'enviado'}).eq('id',data.id);
         const ccMsg = data.cc_banqueros.length 
           ? ` (CC: ${p.ccBanqueros.nombres.join(', ')})` 
           : '';
@@ -5528,6 +5776,7 @@ async function confirmarPendingOrder() {
           ? ` · ✉ email enviado al cliente para OK (CC: ${p.corredora}${ccMsg.replace(/^\s\(CC: /, ', ').replace(/\)$/,'')})`
           : ` · ✉ email enviado a ${p.corredora}${ccMsg}`;
       } else {
+        await SB.from('ordenes').update({email_estado:'fallo'}).eq('id',data.id);
         emailMsg = ` · email falló: ${r.msg}`;
       }
       // Avisar si algún banquero no se encontró
@@ -5656,12 +5905,19 @@ async function confirmarPendingOrder() {
     let emailMsg = '';
     const corrEmail = corredorasConfig[(p.corredora||'').toUpperCase()];
     if (corrEmail && outlookAccount) {
-      const r = await enviarEmailCruce(rows, p.corredora).catch(e=>({ok:false,msg:e.message}));
-      if (r.ok) {
-        for (const row of rows) await SB.from('ordenes').update({email_enviado:true}).eq('id',row.id);
-        emailMsg = ` · ✉ email de cruce enviado a ${p.corredora}`;
+      if (!debeEnviarEmailAuto(p)) {
+        // No enviar: dejar pendiente
+        for (const row of rows) await SB.from('ordenes').update({email_estado:'pendiente'}).eq('id',row.id);
+        emailMsg = ' · 🕓 <strong>email pendiente</strong> (revisar antes de enviar)';
       } else {
-        emailMsg = ` · email falló: ${r.msg}`;
+        const r = await enviarEmailCruce(rows, p.corredora).catch(e=>({ok:false,msg:e.message}));
+        if (r.ok) {
+          for (const row of rows) await SB.from('ordenes').update({email_enviado:true, email_estado:'enviado'}).eq('id',row.id);
+          emailMsg = ` · ✉ email de cruce enviado a ${p.corredora}`;
+        } else {
+          for (const row of rows) await SB.from('ordenes').update({email_estado:'fallo'}).eq('id',row.id);
+          emailMsg = ` · email falló: ${r.msg}`;
+        }
       }
     } else if (corrEmail && !outlookAccount) {
       emailMsg = ' · (conectá Outlook para enviar email)';
@@ -5689,12 +5945,19 @@ async function confirmarPendingOrder() {
     let emailMsgA = '';
     const corrEmailA = corredorasConfig[(p.corredora||'').toUpperCase()];
     if (corrEmailA && outlookAccount) {
-      const rA = await enviarEmailOutlook(data,'aporte').catch(e=>({ok:false,msg:e.message}));
-      if (rA.ok) {
-        await SB.from('aportes').update({email_enviado:true}).eq('id',data.id);
-        emailMsgA = ` · ✉ email enviado a ${p.corredora}`;
+      if (!debeEnviarEmailAuto(p)) {
+        // No enviar: queda pendiente
+        await SB.from('aportes').update({email_estado:'pendiente'}).eq('id',data.id);
+        emailMsgA = ' · 🕓 <strong>email pendiente</strong> (revisar antes de enviar)';
       } else {
-        emailMsgA = ` · email falló: ${rA.msg}`;
+        const rA = await enviarEmailOutlook(data,'aporte').catch(e=>({ok:false,msg:e.message}));
+        if (rA.ok) {
+          await SB.from('aportes').update({email_enviado:true, email_estado:'enviado'}).eq('id',data.id);
+          emailMsgA = ` · ✉ email enviado a ${p.corredora}`;
+        } else {
+          await SB.from('aportes').update({email_estado:'fallo'}).eq('id',data.id);
+          emailMsgA = ` · email falló: ${rA.msg}`;
+        }
       }
     } else if (corrEmailA && !outlookAccount) {
       emailMsgA = ' · (conectá Outlook para enviar email)';
@@ -6259,10 +6522,49 @@ function renderConfigUI() {
   const tenantId = localStorage.getItem('ms_tenant_id')||'common';
   document.getElementById('cfg-client-id').value=clientId;
   document.getElementById('cfg-tenant-id').value=tenantId;
+  
+  // Toggle email automático
+  const cbAuto = document.getElementById('cfg-email-auto');
+  if (cbAuto) {
+    cbAuto.checked = CURRENT_USER?.email_automatico === true;
+    updateEmailAutoLabel(cbAuto.checked);
+  }
+  
   renderCorredorasUI();
   renderAliasConfig();
   renderFondosCfg('');
   renderFondosFrecuentes();
+}
+
+function updateEmailAutoLabel(on) {
+  const status = document.getElementById('cfg-email-auto-status');
+  if (status) {
+    status.textContent = on ? 'ACTIVADO' : 'DESACTIVADO';
+    status.style.color = on ? 'var(--accent)' : 'var(--warn)';
+  }
+}
+
+async function toggleEmailAutomatico(nuevoEstado) {
+  const msg = document.getElementById('cfg-email-auto-msg');
+  if (!CURRENT_USER?.bk_id) {
+    msg.textContent = '⚠ No se pudo identificar tu perfil de banquero';
+    return;
+  }
+  const {error} = await SB.from('banqueros')
+    .update({email_automatico: nuevoEstado})
+    .eq('id', CURRENT_USER.bk_id);
+  if (error) {
+    msg.textContent = '❌ Error: ' + error.message;
+    // Revertir checkbox
+    document.getElementById('cfg-email-auto').checked = CURRENT_USER.email_automatico;
+    return;
+  }
+  CURRENT_USER.email_automatico = nuevoEstado;
+  updateEmailAutoLabel(nuevoEstado);
+  msg.textContent = nuevoEstado 
+    ? '✓ Email automático activado: los emails se envían al confirmar'
+    : '✓ Email automático desactivado: las operaciones quedan pendientes';
+  setTimeout(() => { msg.textContent = ''; }, 4000);
 }
 function renderCorredorasUI() {
   const entries = Object.entries(corredorasConfig);
@@ -7262,15 +7564,32 @@ async function importarPulsoExcel(event) {
     if (subidas > 0) {
       try {
         const snapshot = extraerCuadroResumen(wb);
-        if (snapshot) {
+        if (!snapshot) {
+          botMsg('⚠ No encontré la hoja "Cuadro resumen" en el Excel. Los valores cuota se guardaron, pero el dashboard del Pulso no.');
+        } else if (!snapshot.categorias?.length) {
+          botMsg(`⚠ La hoja "Cuadro resumen" existe pero no logré extraer categorías. Probablemente el formato del Excel cambió.`);
+        } else {
           const {error: snapErr} = await SB.from('pulso_snapshot').upsert({
             id: 1, snapshot, actualizado_en: new Date().toISOString()
           }, {onConflict: 'id'});
-          if (snapErr) console.error('Error guardar snapshot:', snapErr);
-          else console.log('Snapshot Pulso guardado OK');
+          if (snapErr) {
+            console.error('Error guardar snapshot:', snapErr);
+            let snapMsg = `⚠ No pude guardar el snapshot del Pulso: <code style="font-size:11px">${snapErr.message || snapErr.code}</code>`;
+            const errStr = JSON.stringify(snapErr).toLowerCase();
+            if (errStr.includes('does not exist') || errStr.includes('relation')) {
+              snapMsg += `<br><span style="color:var(--text2);font-size:11px">→ La tabla <code>pulso_snapshot</code> no existe. Corré el SQL primero.</span>`;
+            } else if (errStr.includes('row-level security') || errStr.includes('policy')) {
+              snapMsg += `<br><span style="color:var(--text2);font-size:11px">→ RLS bloqueando. Corré las policies en Supabase.</span>`;
+            }
+            botMsg(snapMsg);
+          } else {
+            console.log('Snapshot Pulso guardado OK', snapshot.categorias.length, 'categorías');
+            botMsg(`📈 Snapshot del dashboard guardado: <strong>${snapshot.categorias.length}</strong> categorías, <strong>${snapshot.categorias.reduce((s,c)=>s+c.fondos.length,0)}</strong> fondos · <strong>${snapshot.indices_macro.length}</strong> índices macro`);
+          }
         }
       } catch(e) {
         console.error('Error extraer cuadro resumen:', e);
+        botMsg(`⚠ Error procesando Cuadro resumen: ${e.message}`);
       }
     }
     
@@ -7285,6 +7604,58 @@ async function importarPulsoExcel(event) {
 
 // ─── Cache local de valores cuota más recientes (para resolución rápida "a NAV") ───
 let VALORES_CUOTA_CACHE = {}; // nemo → {fecha, valor}
+
+// ─── Lista de nombres oficiales de fondos del Excel del Pulso ────
+// Se popula al subir el Excel y al cargar snapshot. Sirve para que el parser
+// de aportes/rescates pueda matchear nombres completos.
+let FONDOS_MUTUOS_NOMBRES = []; // [{nombre, nombreNorm}]
+
+function refreshFondosMutuosNombres() {
+  FONDOS_MUTUOS_NOMBRES = [];
+  if (!PULSO_SNAPSHOT?.categorias) return;
+  for (const cat of PULSO_SNAPSHOT.categorias) {
+    for (const f of (cat.fondos||[])) {
+      if (!f.nombre) continue;
+      FONDOS_MUTUOS_NOMBRES.push({
+        nombre: f.nombre,
+        nombreNorm: pulsoNormalizar(f.nombre)
+      });
+    }
+  }
+}
+
+// Dado un span de texto que el parser cree que es nombre de fondo,
+// devuelve el nombre OFICIAL (del Excel) que mejor matchea, o null si nada matchea.
+function matchFondoMutuo(spanRaw) {
+  if (!spanRaw || !FONDOS_MUTUOS_NOMBRES.length) return null;
+  const norm = pulsoNormalizar(spanRaw);
+  if (!norm) return null;
+  
+  // 1. Match exacto
+  let f = FONDOS_MUTUOS_NOMBRES.find(x => x.nombreNorm === norm);
+  if (f) return f.nombre;
+  
+  // 2. Substring (uno incluye al otro)
+  f = FONDOS_MUTUOS_NOMBRES.find(x => norm.includes(x.nombreNorm) || x.nombreNorm.includes(norm));
+  if (f) return f.nombre;
+  
+  // 3. Token overlap >= 60%
+  const tokensSpan = pulsoTokens(spanRaw);
+  if (!tokensSpan.length) return null;
+  let bestScore = 0;
+  let best = null;
+  for (const x of FONDOS_MUTUOS_NOMBRES) {
+    const tokensX = pulsoTokens(x.nombre);
+    if (!tokensX.length) continue;
+    const matched = tokensX.filter(t => tokensSpan.includes(t)).length;
+    if (matched === 0) continue;
+    const scoreMapeo = matched / tokensX.length;
+    const scoreSpan  = matched / tokensSpan.length;
+    const score = Math.min(scoreMapeo, scoreSpan);
+    if (score >= 0.6 && score > bestScore) { bestScore = score; best = x.nombre; }
+  }
+  return best;
+}
 
 async function cargarValoresCuotaCache() {
   try {
@@ -7370,7 +7741,8 @@ function extraerCuadroResumen(wb) {
       currentCat.fondos.push({
         nombre: c0,
         mtd: row[1], ytd: row[2], y2025: row[3], y2024: row[4],
-        duracion: row[5], liquidez: row[6], moneda: row[7], tac: row[8]
+        duracion: row[5], liquidez: row[6], moneda: row[7], tac: row[8],
+        ultimo_vc: null, fecha_vc: null  // Se rellena abajo
       });
     } else if (c0 && inMacro) {
       snapshot.indices_macro.push({nombre: c0, wtd: row[1], mtd: row[2], ytd: row[3]});
@@ -7378,6 +7750,68 @@ function extraerCuadroResumen(wb) {
       snapshot.rf_usa.push({nombre: c0, valores: row.slice(1, 5)});
     }
     i++;
+  }
+  
+  // ── Enriquecer cada fondo con su último VC desde la hoja de su categoría ──
+  // Mapping nombre del cuadro → nombre de hoja en el Excel
+  const HOJA_POR_CATEGORIA = {
+    'DE LA CASA': 'De la Casa',
+    'RENTA FIJA CORTO PLAZO': 'Renta Fija CP',
+    'RENTA FIJA MEDIANO PLAZO': 'Renta Fija MP',
+    'RENTA FIJA INTERNACIONAL': 'Renta Fija Internacional',
+    'RETORNO TOTAL': 'Retorno total',
+    'RENTA VARIABLE LOCAL': 'Renta Variable local',
+    'ALTERNATIVOS CLP': 'Alternativos CLP',
+    'ALTERNATIVOS USD': 'Alternativos USD',
+    'COMPARABLES ALBION': 'Comparables Albion'
+  };
+  
+  for (const cat of snapshot.categorias) {
+    const catKey = cat.nombre.toUpperCase().trim();
+    const hojaNombre = HOJA_POR_CATEGORIA[catKey] || cat.nombre;
+    const wsHoja = wb.Sheets[hojaNombre];
+    if (!wsHoja) {
+      // Intentar buscar la hoja por substring si el nombre no matchea exacto
+      const hojaFound = wb.SheetNames.find(s => s.toLowerCase() === hojaNombre.toLowerCase());
+      if (!hojaFound) continue;
+    }
+    const wsRef = wsHoja || wb.Sheets[wb.SheetNames.find(s => s.toLowerCase() === hojaNombre.toLowerCase())];
+    if (!wsRef) continue;
+    
+    const aoaHoja = XLSX.utils.sheet_to_json(wsRef, {header:1, raw:true, defval:null});
+    if (aoaHoja.length < 3) continue;
+    
+    // Fila 1: headers [Fecha, Fondo A, Fondo B, ...]
+    const headerRow = aoaHoja[1] || [];
+    
+    // Para cada fondo de esta categoría, buscar su columna en la hoja y su último valor
+    for (const fondo of cat.fondos) {
+      const fondoNorm = pulsoNormalizar(fondo.nombre);
+      let colIdx = -1;
+      for (let c = 1; c < headerRow.length; c++) {
+        const h = headerRow[c];
+        if (!h || typeof h !== 'string') continue;
+        const hNorm = pulsoNormalizar(h);
+        if (hNorm === fondoNorm || hNorm.includes(fondoNorm) || fondoNorm.includes(hNorm)) {
+          colIdx = c;
+          break;
+        }
+      }
+      if (colIdx < 0) continue;
+      
+      // Buscar última fila con valor no-null en esa columna
+      for (let r = aoaHoja.length - 1; r >= 2; r--) {
+        const row = aoaHoja[r];
+        if (!row) continue;
+        const val = row[colIdx];
+        if (val != null && val !== '' && !isNaN(parseFloat(val))) {
+          fondo.ultimo_vc = parseFloat(val);
+          const fechaIso = excelDateToISO(row[0]);
+          fondo.fecha_vc = fechaIso;
+          break;
+        }
+      }
+    }
   }
   
   return snapshot;
@@ -7411,6 +7845,7 @@ async function cargarPulsoSnapshot() {
     if (error) { console.error('Error cargar snapshot:', error); return null; }
     if (data?.snapshot) {
       PULSO_SNAPSHOT = data.snapshot;
+      refreshFondosMutuosNombres();
       const upd = data.actualizado_en ? new Date(data.actualizado_en).toLocaleString('es-CL') : '';
       const lbl = document.getElementById('pulso-last-update');
       if (lbl) lbl.textContent = upd ? '⏱ ' + upd : '';
@@ -7442,22 +7877,23 @@ async function renderPulso() {
     return;
   }
   
-  // Construir tabs
+  // Construir tabs (estilo corporativo: 'Todas las categorías' + tabs por cat + Macro)
   const tabs = [
-    {id: 'resumen', label: 'Resumen'},
-    {id: 'macro',   label: 'Macro'},
-    ...(PULSO_SNAPSHOT.categorias || []).map((c, idx) => ({id: 'cat-'+idx, label: c.nombre}))
+    {id: 'resumen', label: 'Todas'},
+    ...(PULSO_SNAPSHOT.categorias || []).map((c, idx) => ({id: 'cat-'+idx, label: c.nombre})),
+    {id: 'macro',   label: 'Macro'}
   ];
   
   tabsEl.innerHTML = tabs.map(t => {
     const isActive = t.id === PULSO_TAB_ACTIVE;
     return `<button onclick="selectPulsoTab('${t.id}')"
-      style="padding:9px 14px;background:${isActive?'var(--surface2)':'transparent'};
-             color:${isActive?'var(--accent)':'var(--text2)'};
-             border:none;border-bottom:2px solid ${isActive?'var(--accent)':'transparent'};
-             font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;
-             text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;
-             transition:all .15s">${t.label}</button>`;
+      class="pulso-tab ${isActive?'active':''}"
+      style="padding:11px 16px;background:${isActive?'#1b2d5b':'transparent'};
+             color:${isActive?'#fff':'#7a869a'};
+             border:none;border-bottom:3px solid ${isActive?'#1b2d5b':'transparent'};
+             font-family:'Lato',sans-serif;font-size:11px;font-weight:700;cursor:pointer;
+             text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;
+             transition:all .15s;margin-bottom:-1px">${t.label}</button>`;
   }).join('');
   
   if (PULSO_TAB_ACTIVE === 'resumen') {
@@ -7475,99 +7911,155 @@ function selectPulsoTab(tabId) {
   renderPulso();
 }
 
-function pulsoCellClass(v) {
-  const c = classPctPulso(v);
-  if (c === 'pos') return 'color:var(--accent);font-weight:600;background:rgba(0,229,150,0.08)';
-  if (c === 'neg') return 'color:var(--venta);font-weight:600;background:rgba(255,80,80,0.08)';
-  return 'color:var(--text2)';
+// ─── Render estilo "Vizcaya PulsoVCC Dashboard" (paleta corporativa clara) ───
+
+const PULSO_CSS_VARS = `
+  --p-bg:#f0f2f5;
+  --p-surface:#ffffff;
+  --p-surface2:#f7f8fa;
+  --p-border:#dde1e8;
+  --p-text:#1a2233;
+  --p-muted:#7a869a;
+  --p-accent:#1b2d5b;
+  --p-accent-light:#e8edf5;
+  --p-pos:#1a7f4b;
+  --p-pos-bg:#eaf6f0;
+  --p-neg:#c0392b;
+  --p-neg-bg:#fdf0ef;
+`;
+
+function pulsoTdClass(v) {
+  // Devuelve string de estilos CSS inline
+  if (v == null || v === '') return 'color:var(--p-muted)';
+  if (typeof v === 'number') {
+    if (v > 0) return 'color:var(--p-pos);font-weight:700;background:var(--p-pos-bg)';
+    if (v < 0) return 'color:var(--p-neg);font-weight:700;background:var(--p-neg-bg)';
+    return 'color:var(--p-muted)';
+  }
+  const s = String(v).trim();
+  if (s.startsWith('+')) return 'color:var(--p-pos);font-weight:700;background:var(--p-pos-bg)';
+  if (s.startsWith('-')) return 'color:var(--p-neg);font-weight:700;background:var(--p-neg-bg)';
+  return 'color:var(--p-muted)';
 }
 
-function renderTablaFondos(fondos, mostrarPromedio=true) {
-  if (!fondos?.length) return '<div style="padding:20px;color:var(--text2);text-align:center">Sin fondos</div>';
-  
-  const ultVC = (nombreExcel) => {
-    const nemo = buscarNemoPorNombre(nombreExcel);
-    if (!nemo) return null;
-    return VALORES_CUOTA_CACHE[nemo];
-  };
-  
-  const filas = fondos.map(f => {
-    const vc = ultVC(f.nombre);
-    const nemo = buscarNemoPorNombre(f.nombre);
-    return `<tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:8px 12px">
-        <div style="color:var(--text);font-weight:600;font-size:12px">${f.nombre}</div>
-        ${nemo ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text2);margin-top:1px">${nemo}</div>` : ''}
-      </td>
-      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(f.mtd)}">${fmtPctPulso(f.mtd)}</td>
-      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(f.ytd)}">${fmtPctPulso(f.ytd)}</td>
-      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text2)">${fmtPctPulso(f.y2025)}</td>
-      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text2)">${fmtPctPulso(f.y2024)}</td>
-      <td style="padding:8px 12px;text-align:center;color:var(--text2);font-size:11px">${f.duracion??'—'}</td>
-      <td style="padding:8px 12px;text-align:center;color:var(--text2);font-size:10px">${f.liquidez??'—'}</td>
-      <td style="padding:8px 12px;text-align:center"><span style="font-family:var(--mono);font-size:9px;background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:3px">${f.moneda??'—'}</span></td>
-      <td style="padding:8px 12px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600">${vc?vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4}):'—'}</td>
-    </tr>`;
-  }).join('');
-  
-  let promHtml = '';
-  if (mostrarPromedio && fondos.length > 1) {
-    const num = v => typeof v === 'number' ? v : null;
-    const vals = k => fondos.map(f=>num(f[k])).filter(v=>v!=null);
-    const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
-    const fmt = v => v == null ? '—' : fmtPctPulso(v);
-    const a_mtd = avg(vals('mtd'));
-    const a_ytd = avg(vals('ytd'));
-    const a_25 = avg(vals('y2025'));
-    const a_24 = avg(vals('y2024'));
-    promHtml = `<tr style="background:var(--surface2);border-top:2px solid var(--accent)">
-      <td style="padding:9px 12px;font-weight:700;color:var(--accent);text-transform:uppercase;font-size:10px;letter-spacing:.05em">Promedio</td>
-      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${fmt(a_mtd)}</td>
-      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${fmt(a_ytd)}</td>
-      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--text2);font-size:10px">${fmt(a_25)}</td>
-      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--text2);font-size:10px">${fmt(a_24)}</td>
-      <td colspan="4"></td>
-    </tr>`;
-  }
-  
-  return `<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
-    <table style="width:100%;border-collapse:collapse">
-      <thead>
-        <tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
-          <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Fondo</th>
-          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">MTD</th>
-          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">YTD</th>
-          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">2025</th>
-          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">2024</th>
-          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Dur.</th>
-          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Liquidez</th>
-          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Mon.</th>
-          <th style="padding:9px 12px;text-align:right;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Último VC</th>
-        </tr>
-      </thead>
-      <tbody>${filas}${promHtml}</tbody>
-    </table>
+function pulsoPageWrap(innerHtml) {
+  // Wrap todo el contenido con el CSS aislado del dashboard original
+  return `<div style="${PULSO_CSS_VARS} background:var(--p-bg);padding:24px;border-radius:8px;color:var(--p-text);font-family:'Lato','Inter',sans-serif;font-size:13px;line-height:1.5">
+    ${innerHtml}
   </div>`;
 }
 
+// Genera el bloque de subheader (azul oscuro con título categoría + columnas)
+function pulsoSubHeader(catNombre) {
+  return `
+    <tr><td colspan="10" style="background:var(--p-accent);padding:9px 16px;font-family:'Playfair Display','Lato',serif;font-size:13px;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:1.2px;text-align:left">${catNombre}</td></tr>
+    <tr>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:left;border-top:1px solid rgba(255,255,255,0.15);min-width:200px">Fondo</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">MTD</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">YTD</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">2025</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">2024</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Dur.</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Liquidez</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">Mon.</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:center;border-top:1px solid rgba(255,255,255,0.15)">TAC</th>
+      <th style="background:var(--p-accent);color:rgba(255,255,255,0.7);font-weight:700;padding:7px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;text-align:right;border-top:1px solid rgba(255,255,255,0.15)">Último VC</th>
+    </tr>
+  `;
+}
+
+function pulsoFila(f, idx) {
+  const bg = idx % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
+  const nemo = buscarNemoPorNombre(f.nombre);
+  
+  // VC: priorizar el del snapshot (f.ultimo_vc) que viene del Excel directamente.
+  // Si no hay, fallback al cache valores_cuota (que es lo subido a Supabase).
+  let vcValor = null, vcFecha = null;
+  if (f.ultimo_vc != null) {
+    vcValor = f.ultimo_vc;
+    vcFecha = f.fecha_vc;
+  } else if (nemo && VALORES_CUOTA_CACHE[nemo]) {
+    vcValor = VALORES_CUOTA_CACHE[nemo].valor;
+    vcFecha = VALORES_CUOTA_CACHE[nemo].fecha;
+  }
+  
+  const subNemo = nemo
+    ? `<div style="font-size:10px;color:var(--p-muted);font-family:ui-monospace,Menlo,monospace;margin-top:1px">${nemo}</div>`
+    : '';
+  const nombreCell = `<div style="font-weight:600;color:var(--p-accent)">${f.nombre}</div>${subNemo}`;
+  
+  const vcCell = vcValor != null
+    ? `<div style="font-family:ui-monospace,Menlo,monospace;color:var(--p-accent);font-weight:700">${vcValor.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4})}</div>${vcFecha?`<div style="font-size:9px;color:var(--p-muted);margin-top:1px">${vcFecha.split('-').reverse().join('/')}</div>`:''}`
+    : '<span style="color:var(--p-muted)">—</span>';
+  
+  return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)" onmouseover="this.style.background='var(--p-accent-light)'" onmouseout="this.style.background='${bg}'">
+    <td style="padding:10px 16px;text-align:left">${nombreCell}</td>
+    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.mtd)}">${fmtPctPulso(f.mtd)}</td>
+    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.ytd)}">${fmtPctPulso(f.ytd)}</td>
+    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.y2025)}">${fmtPctPulso(f.y2025)}</td>
+    <td style="padding:10px 16px;text-align:center;${pulsoTdClass(f.y2024)}">${fmtPctPulso(f.y2024)}</td>
+    <td style="padding:10px 16px;text-align:center;color:var(--p-muted);font-size:12px">${f.duracion??'—'}</td>
+    <td style="padding:10px 16px;text-align:center;color:var(--p-muted);font-size:12px">${f.liquidez??'—'}</td>
+    <td style="padding:10px 16px;text-align:center"><span style="font-size:11px;font-weight:700;color:var(--p-accent);background:var(--p-accent-light);padding:3px 8px;border-radius:4px;letter-spacing:.5px">${f.moneda??'—'}</span></td>
+    <td style="padding:10px 16px;text-align:center;color:var(--p-muted);font-size:12px">${f.tac??'—'}</td>
+    <td style="padding:10px 16px;text-align:right">${vcCell}</td>
+  </tr>`;
+}
+
+function pulsoFilaPromedio(fondos) {
+  const num = v => typeof v === 'number' ? v : null;
+  const vals = k => fondos.map(f=>num(f[k])).filter(v=>v!=null);
+  const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
+  const fmt = v => v == null ? '—' : fmtPctPulso(v);
+  return `<tr style="background:#e9ecef;border-top:2px solid #ced4da">
+    <td style="padding:10px 16px;text-align:left;font-weight:700;font-size:12px;color:var(--p-accent);text-transform:uppercase;letter-spacing:.8px">Promedio</td>
+    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('mtd')))}</td>
+    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('ytd')))}</td>
+    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('y2025')))}</td>
+    <td style="padding:10px 16px;text-align:center;font-weight:700;color:var(--p-accent)">${fmt(avg(vals('y2024')))}</td>
+    <td colspan="5"></td>
+  </tr>`;
+}
+
 function renderPulsoResumen() {
-  let html = '';
-  if (PULSO_SNAPSHOT.titulo) {
-    html += `<div style="font-size:11px;color:var(--text2);font-family:var(--mono);margin-bottom:14px">// ${PULSO_SNAPSHOT.titulo}</div>`;
-  }
+  // Una sola tabla con sub-headers azules entre categorías (como el dashboard original)
+  let filasHtml = '';
   for (const cat of (PULSO_SNAPSHOT.categorias || [])) {
-    html += `<div style="margin-bottom:24px">
-      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">${cat.nombre}</div>
-      ${renderTablaFondos(cat.fondos, false)}
-    </div>`;
+    filasHtml += pulsoSubHeader(cat.nombre);
+    cat.fondos.forEach((f, i) => { filasHtml += pulsoFila(f, i); });
   }
-  return html;
+  
+  const tabla = `<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface)">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tbody>${filasHtml}</tbody>
+    </table>
+  </div>`;
+  
+  return pulsoPageWrap(`
+    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Resumen Semanal</div>
+    <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">Todas las categorías</div>
+    ${tabla}
+  `);
 }
 
 function renderPulsoCategoria(cat) {
-  if (!cat) return '<div style="color:var(--text2)">Categoría no encontrada</div>';
-  return `<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:12px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em">// ${cat.nombre}</div>
-    ${renderTablaFondos(cat.fondos, true)}`;
+  if (!cat) return pulsoPageWrap('<div style="color:var(--p-muted)">Categoría no encontrada</div>');
+  
+  let filasHtml = pulsoSubHeader(cat.nombre);
+  cat.fondos.forEach((f, i) => { filasHtml += pulsoFila(f, i); });
+  if (cat.fondos.length > 1) filasHtml += pulsoFilaPromedio(cat.fondos);
+  
+  const tabla = `<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface)">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tbody>${filasHtml}</tbody>
+    </table>
+  </div>`;
+  
+  return pulsoPageWrap(`
+    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">${cat.nombre}</div>
+    <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">${cat.fondos.length} fondos · Comité de Inversiones</div>
+    ${tabla}
+  `);
 }
 
 function renderPulsoMacro() {
@@ -7575,54 +8067,62 @@ function renderPulsoMacro() {
   const r = PULSO_SNAPSHOT.rf_usa || [];
   const headersRF = PULSO_SNAPSHOT.rf_usa_headers || ['Cierre','Anterior','Actual'];
   
-  const filasMacro = m.map(i => `<tr style="border-bottom:1px solid var(--border)">
-    <td style="padding:9px 12px;color:var(--text);font-weight:600">${i.nombre}</td>
-    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.wtd)}">${fmtPctPulso(i.wtd)}</td>
-    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.mtd)}">${fmtPctPulso(i.mtd)}</td>
-    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.ytd)}">${fmtPctPulso(i.ytd)}</td>
-  </tr>`).join('');
-  
-  const filasRF = r.map(i => {
-    const vals = i.valores || [];
-    return `<tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:9px 12px;color:var(--text);font-weight:600">${i.nombre}</td>
-      ${vals.map(v => `<td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text)">${v==null?'—':v}</td>`).join('')}
+  // Tabla índices macro
+  const headerMacro = `<tr>
+    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:left">Índice</th>
+    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">WTD</th>
+    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">MTD</th>
+    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">YTD</th>
+  </tr>`;
+  const filasMacro = m.map((idx, i) => {
+    const bg = i % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
+    return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)">
+      <td style="padding:10px 16px;font-weight:600;color:var(--p-accent)">${idx.nombre}</td>
+      <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.wtd)}">${fmtPctPulso(idx.wtd)}</td>
+      <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.mtd)}">${fmtPctPulso(idx.mtd)}</td>
+      <td style="padding:10px 16px;text-align:center;${pulsoTdClass(idx.ytd)}">${fmtPctPulso(idx.ytd)}</td>
     </tr>`;
   }).join('');
   
-  return `
-    <div style="margin-bottom:24px">
-      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">// Índices Macro</div>
-      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
-        <table style="width:100%;border-collapse:collapse">
-          <thead><tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
-            <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Índice</th>
-            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">WTD</th>
-            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">MTD</th>
-            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">YTD</th>
-          </tr></thead>
-          <tbody>${filasMacro}</tbody>
-        </table>
-      </div>
+  // Tabla RF USA
+  const headerRF = `<tr>
+    <th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:left">Índice</th>
+    ${headersRF.map(h => `<th style="background:var(--p-accent);color:#fff;font-weight:700;padding:11px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;text-align:center">${h}</th>`).join('')}
+  </tr>`;
+  const filasRF = r.map((idx, i) => {
+    const bg = i % 2 === 0 ? 'var(--p-surface)' : 'var(--p-surface2)';
+    return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)">
+      <td style="padding:10px 16px;font-weight:600;color:var(--p-accent)">${idx.nombre}</td>
+      ${(idx.valores||[]).map(v => `<td style="padding:10px 16px;text-align:center;color:var(--p-text);font-family:ui-monospace,Menlo,monospace">${v==null?'—':v}</td>`).join('')}
+    </tr>`;
+  }).join('');
+  
+  return pulsoPageWrap(`
+    <div style="font-family:'Playfair Display','Lato',serif;font-size:20px;color:var(--p-accent);margin-bottom:6px;font-weight:600">Indicadores Macro</div>
+    <div style="font-size:11px;color:var(--p-muted);margin-bottom:20px;text-transform:uppercase;letter-spacing:1.2px">Índices globales y Renta Fija USA</div>
+    
+    <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface);margin-bottom:20px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>${headerMacro}</thead>
+        <tbody>${filasMacro}</tbody>
+      </table>
     </div>
-    ${r.length ? `<div>
-      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">// Renta Fija USA</div>
-      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
-        <table style="width:100%;border-collapse:collapse">
-          <thead><tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
-            <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Índice</th>
-            ${headersRF.map(h => `<th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">${h}</th>`).join('')}
-          </tr></thead>
-          <tbody>${filasRF}</tbody>
-        </table>
-      </div>
+    
+    ${r.length ? `<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);box-shadow:0 1px 4px rgba(0,0,0,.05);background:var(--p-surface)">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>${headerRF}</thead>
+        <tbody>${filasRF}</tbody>
+      </table>
     </div>` : ''}
-  `;
+  `);
 }
 
 // Lanzar la carga al iniciar (después de SB)
 setTimeout(() => {
-  if (typeof SB !== 'undefined' && SB) cargarValoresCuotaCache();
+  if (typeof SB !== 'undefined' && SB) {
+    cargarValoresCuotaCache();
+    cargarPulsoSnapshot();
+  }
 }, 2000);
 
 // Show email dest field when checkbox is toggled for aportes
