@@ -2823,7 +2823,11 @@ function cerrarEditorModal() {
 }
 
 function renderEditorModal() {
-  cerrarEditorModal();
+  // Solo remover el DOM previo, NO el contexto
+  const prev = document.getElementById('editor-modal');
+  if (prev) prev.remove();
+  
+  if (!EDITOR_CTX) return;
   const {tabla, row} = EDITOR_CTX;
   const isOrden = tabla === 'ordenes';
   
