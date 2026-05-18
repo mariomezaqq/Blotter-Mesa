@@ -6,6 +6,7 @@
 <title>Blotter · Mesa de Dinero</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -752,6 +753,10 @@ tr:hover td{background:var(--surface2)}
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,12 5,7 8,9 11,4 14,6"/><line x1="2" y1="14" x2="14" y2="14"/></svg>
         Resúmenes
       </div>
+      <div class="nav-item" onclick="showSection('pulso',this)" id="nav-pulso">
+        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 8h3l2-5 3 10 2-5h4"/></svg>
+        Pulso VCC
+      </div>
       <div class="nav-section">Gestión</div>
       <div class="nav-item" onclick="showSection('clientes',this)">
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="5" r="2.5"/><path d="M1 13c0-2.8 2.2-5 5-5"/><circle cx="12" cy="9" r="2"/><path d="M10 14c0-1.1.9-2 2-2s2 .9 2 2"/></svg>
@@ -791,6 +796,8 @@ tr:hover td{background:var(--surface2)}
         </div>
         <div class="topbar-right" id="topbar-right-btns">
           <button class="btn sm" onclick="exportCSV()">↓ CSV</button>
+          <button class="btn sm" onclick="document.getElementById('pulso-file-input').click()" title="Importar Excel del Pulso semanal">📊 Pulso</button>
+          <input type="file" id="pulso-file-input" accept=".xlsx,.xlsm" style="display:none" onchange="importarPulsoExcel(event)">
           <button class="view-mode-btn active" id="vmbtn-chat" onclick="setViewMode('chat')">💬 Chatbot</button>
           <button class="view-mode-btn" id="vmbtn-form" onclick="setViewMode('form')">Formularios</button>
         </div>
@@ -1149,6 +1156,23 @@ tr:hover td{background:var(--surface2)}
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- ── PULSO VCC ── -->
+        <div id="sec-pulso" class="section">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+            <div>
+              <div style="font-family:var(--mono);font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em">// Pulso VCC</div>
+              <div style="font-size:13px;color:var(--text);margin-top:2px" id="pulso-subtitle">Fondos aprobados por el Comité de Inversiones</div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span id="pulso-last-update" style="font-size:10px;color:var(--text2);font-family:var(--mono)"></span>
+              <button class="btn sm" onclick="document.getElementById('pulso-file-input').click()" title="Subir Excel del Pulso">📊 Importar Excel</button>
+              <button class="btn sm" onclick="renderPulso()" title="Refrescar">↻</button>
+            </div>
+          </div>
+          <div id="pulso-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px;overflow-x:auto"></div>
+          <div id="pulso-content"></div>
         </div>
 
         <!-- ── CONFIG ── -->
@@ -2529,7 +2553,7 @@ async function cargarConfigSupabase() {
 // ═══════════════════════════════════════════════════════════
 // NAV
 // ═══════════════════════════════════════════════════════════
-const TITLES={ordenes:'Órdenes del día',aportes:'Aportes / Rescates',saldos:'Saldos',clientes:'Base de clientes',banqueros:'Banqueros',resumenes:'Resúmenes del día',config:'Configuración'};
+const TITLES={ordenes:'Órdenes del día',aportes:'Aportes / Rescates',saldos:'Saldos',clientes:'Base de clientes',banqueros:'Banqueros',resumenes:'Resúmenes del día',pulso:'Pulso VCC',config:'Configuración'};
 async function showSection(name, el) {
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -2957,9 +2981,9 @@ function selectTipoOp(tipo) {
   const inp = document.getElementById('chat-input');
   if (inp) {
     const placeholders = {
-      auto:     'Ej: compra 5000 COPEC para García RUT 12345678-9 cta 456 SMB precio 8500...',
-      orden:    'Compra/venta simple. Ej: compra 5000 COPEC para García MBI precio 8500',
-      cruce:    'Cruce entre clientes. Ej: Mario vende 50 palos albion a 1055 y Pedro los compra',
+      auto:     'Ej: compra 5000 COPEC para García RUT 12345678-9 cta 456 SMB precio 8500... ("a NAV" para valor cuota)',
+      orden:    'Compra/venta simple. Ej: compra 1000 ALBION para García a NAV',
+      cruce:    'Cruce entre clientes. Ej: Mario vende 50 palos albion a NAV y Pedro los compra',
       multiple: 'Varias operaciones por la misma corredora. Separá con coma o salto de línea'
     };
     inp.placeholder = placeholders[tipo] || placeholders.auto;
@@ -3222,7 +3246,14 @@ function parseMontoNatural(text) {
 // Extracts {cantidad, precio, monto} from natural language
 // Strategy: strip noise first, then identify each number's role by context
 function extractCantidadYPrecio(text) {
-  let cantidad = null, precio = null, monto = null;
+  let cantidad = null, precio = null, monto = null, navFlag = false;
+
+  // Step 0: detectar "a NAV", "a valor cuota", "a vc", "al valor cuota" → flag para resolver después
+  const navRe = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
+  if (navRe.test(text)) {
+    navFlag = true;
+    text = text.replace(navRe, ''); // remove para no estorbar parseo
+  }
 
   // Step 1: mask non-financial numbers so they don't bleed into parsing
   let t = text
@@ -3277,7 +3308,7 @@ function extractCantidadYPrecio(text) {
     precio = nums[0];
   }
 
-  return {cantidad, precio, monto};
+  return {cantidad, precio, monto, navFlag};
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3709,9 +3740,7 @@ function detectarCCBanquero(text) {
 function parseOrden(text, forceOp) {
   const op = forceOp || (/\b(VENTA|VENDER|VENDO)\b/i.test(text) ? 'VENTA' : 'COMPRA');
 
-  const {cantidad, precio, monto} = extractCantidadYPrecio(text);
-
-  // Condición OBLIGATORIA: PH (Paga Hoy), PM (Paga Mañana), CN (Contado Normal)
+  const {cantidad, precio, monto, navFlag} = extractCantidadYPrecio(text);
   let condicion = '';
   const upT = text.toUpperCase();
   if (/\bPH\b/.test(upT) || /\b(paga\s+hoy|pagahoy)\b/i.test(text))       condicion = 'PH';
@@ -3762,6 +3791,7 @@ function parseOrden(text, forceOp) {
     cliente: clientResult?.nombre || '',
     rut:     clientResult?.rut    || '',
     clienteResult: clientResult,
+    navFlag,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -3936,6 +3966,21 @@ function checkMissingAndConfirm(parsed) {
   // Para órdenes: precio se pregunta PRIMERO. Si después hay monto, se calcula la cantidad.
   // Si no hay monto, se pregunta cantidad después.
   
+  // ── Resolver "a NAV" si flag activo y tenemos nemo ──
+  if (parsed.type === 'orden' && parsed.navFlag && (!parsed.precio || Number(parsed.precio) <= 0) && parsed.nemo) {
+    const vc = getValorCuotaNAV(parsed.nemo);
+    if (vc) {
+      parsed.precio = vc.valor;
+      parsed.navFlag = false;
+      const fechaCorta = vc.fecha.split('-').reverse().join('/');
+      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
+    } else {
+      botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
+      chatContext = {state:'await_missing_field', field:'precio', parsed};
+      return;
+    }
+  }
+
   // Precio obligatorio para órdenes
   if (parsed.type === 'orden' && (!parsed.precio || Number(parsed.precio) <= 0)) {
     chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4060,7 +4105,9 @@ function handleNemoClarify(text) {
     parsed.nemo = rawNemo;
     parsed.nemoResult = {resolved:rawNemo, exact:true};
     chatContext = null;
-    if (!parsed.clienteResult || parsed.clienteResult.unknown) {
+    if (parsed.type === 'cruce') {
+      continuarFlujoCruce(parsed);
+    } else if (!parsed.clienteResult || parsed.clienteResult.unknown) {
       checkMissingAndConfirm(parsed);
     } else {
       pendingOrder = parsed;
@@ -4088,6 +4135,13 @@ function handleNemoClarify(text) {
   parsed.nemo = nemo;
   parsed.nemoResult = {resolved:nemo, exact:true};
 
+  // Rutear según tipo
+  if (parsed.type === 'cruce') {
+    chatContext = null;
+    continuarFlujoCruce(parsed);
+    return;
+  }
+
   // Now check client
   if (!parsed.clienteResult || (parsed.clienteResult?.unknown && !parsed.rut && !parsed.cliente)) {
     chatContext = {state:'await_new_client_confirm', parsed};
@@ -4111,9 +4165,13 @@ function resolveNemoDisambig(text) {
     parsed.nemoResult = {resolved:rawNemo, exact:true};
     aliasContext = null;
     chatContext  = null;
-    pendingOrder = parsed;
-    chatContext  = {state:'await_confirm'};
-    showParsedConfirm(parsed);
+    if (parsed.type === 'cruce') {
+      continuarFlujoCruce(parsed);
+    } else {
+      pendingOrder = parsed;
+      chatContext  = {state:'await_confirm'};
+      showParsedConfirm(parsed);
+    }
     return;
   }
 
@@ -4135,9 +4193,14 @@ function resolveNemoDisambig(text) {
   parsed.nemo = finalNemo;
   parsed.nemoResult = {resolved:finalNemo, exact:true};
   aliasContext = null;
-  pendingOrder = parsed;
-  chatContext  = {state:'await_confirm'};
-  showParsedConfirm(parsed);
+  chatContext = null;
+  if (parsed.type === 'cruce') {
+    continuarFlujoCruce(parsed);
+  } else {
+    pendingOrder = parsed;
+    chatContext  = {state:'await_confirm'};
+    showParsedConfirm(parsed);
+  }
 }
 
 // ── New client helpers ──
@@ -4242,6 +4305,21 @@ function handleMissingField(text) {
 
 // Vuelve a chequear si faltan campos en un cruce y avanza
 function continuarFlujoCruce(parsed) {
+  // Resolver NAV si se pidió "a NAV" y tenemos nemo
+  if (parsed.navFlag && !parsed.precio && parsed.nemo) {
+    const vc = getValorCuotaNAV(parsed.nemo);
+    if (vc) {
+      parsed.precio = vc.valor;
+      parsed.navFlag = false;
+      const fechaCorta = vc.fecha.split('-').reverse().join('/');
+      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
+    } else {
+      botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
+      chatContext = {state:'await_missing_field', field:'precio', parsed};
+      return;
+    }
+  }
+  
   // Precio
   if (!parsed.precio || Number(parsed.precio) <= 0) {
     chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4798,9 +4876,16 @@ function parseCruce(text) {
 
   // ── Precio ────────────────────────────────────────────────
   let precio = null;
-  const precioM = text.match(/(?:a|precio)\s+(\d[\d.,]*)/i);
-  if (precioM) {
-    precio = parsePrecio(precioM[1]);
+  let navFlag = false;
+  // Primero: "a NAV", "a valor cuota", "a VC"
+  const navReCruce = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
+  if (navReCruce.test(text)) {
+    navFlag = true;
+  } else {
+    const precioM = text.match(/(?:a|precio)\s+(\d[\d.,]*)/i);
+    if (precioM) {
+      precio = parsePrecio(precioM[1]);
+    }
   }
 
   // ── Condición ─────────────────────────────────────────────
@@ -4985,7 +5070,7 @@ function parseCruce(text) {
         nombre: clientResult?.nombre || nombre.toUpperCase(),
         rut:    clientResult?.rut    || '',
         cta:    clientResult?.cliente?.cuentas?.[0]?.cta || '',
-        clienteResult,
+        clienteResult: clientResult,
         cantidad
       };
     }).filter(Boolean).filter(p => p.nombreRaw.length >= 2);
@@ -5019,6 +5104,7 @@ function parseCruce(text) {
     type: 'cruce', nemo, nemoResult, nemoFound,
     precio, condicion, corredora,
     vendedores, compradores,
+    navFlag,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -6892,6 +6978,330 @@ async function exportCSV() {
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));
   a.download=`blotter_${sec}_${todayStr()}.csv`;a.click();
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PULSO VCC — Importación Excel valores cuota + resolución "a NAV"
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Mapeo nombre Excel → nemo Sebra (provisto por el usuario)
+const PULSO_MAPEO = [
+  {nombre:'FI Albion',                         nemo:'CFIALBIONA'},
+  {nombre:'Amc Biotech',                       nemo:null},
+  {nombre:'MBI Deuda Total (B)',               nemo:'CFIMBIDT-B'},
+  {nombre:'FFMM LV ahorro capital (F)',        nemo:null},
+  {nombre:'Fynsa deuda chile',                 nemo:'CFIFYNSADA'},
+  {nombre:'FFMM BTG renta local',              nemo:null},
+  {nombre:'MBI Deuda corporativa A',           nemo:'CFIMBDCAPV'},
+  {nombre:'FFMM LV ahorro corporativo (F)',    nemo:null},
+  {nombre:'Moneda deuda chile (A)',            nemo:'CFIMDCHA'},
+  {nombre:'LV Deuda chile (A)',                nemo:'CFILVCOR-A'},
+  {nombre:'BTG deuda activa plus A',           nemo:'CFIBTGDAPA'},
+  {nombre:'BTG deuda corporativa A',           nemo:'CFIBPDCCHA'},
+  {nombre:'Quest renta global hedge',          nemo:'CFIQRGH'},
+  {nombre:'Quest renta global A',              nemo:'CFIQRGA-E'},
+  {nombre:'FFMM BTG renta latam high yield',   nemo:null},
+  {nombre:'Mbi global fixed income',           nemo:'CFI-MBIGFA'},
+  {nombre:'Moneda deuda latam (R)',            nemo:'CFI-MDLATR'},
+  {nombre:'MBI deuda plus A',                  nemo:'CFIMBIRF-A'},
+  {nombre:'MBI RF plus dolar U',               nemo:'CFI-MBRFUS'},
+  {nombre:'Moneda renta clp R',                nemo:'CFIMRCLPR'},
+  {nombre:'LV Enfoque F',                      nemo:null},
+  {nombre:'LV Enfoque R',                      nemo:'CFMLVENFR'},
+  {nombre:'Toesca chile equities',             nemo:'CFMTOEEQUB'},
+  {nombre:'Conviccion mbi',                    nemo:'CFIMBICL-A'},
+  {nombre:'Fynsa retorno total',               nemo:'CFIFYNTORA'},
+  {nombre:'Moneda pionero A',                  nemo:'CFIPIONERO'},
+  {nombre:'Mbi deuda alternativa A',           nemo:'CFIMBIDA-A'},
+  {nombre:'BTG liquidez alternativa',          nemo:'CFIBTGPLAA'},
+  {nombre:'BTG deuda estrategica A',           nemo:'CFIBTGDEA'},
+  {nombre:'Toesca facturas',                   nemo:'CFITDPFI-E'},
+  {nombre:'Ameris AAtech',                     nemo:'CFIAMSLPA'},
+  {nombre:'Fynsa deuda privada',               nemo:'CFIFYNDEPA'},
+  {nombre:'HMC renta global clp bp',           nemo:'CFIHMCRGPB'},
+  {nombre:'Toesca deuda privada A',            nemo:'CFITODPA-E'},
+  {nombre:'Toesca deuda privada X',            nemo:'CFITODPX-E'},
+  {nombre:'Toesca deuda privada F',            nemo:'CFITODPF-E'},
+  {nombre:'Quest Fin Inmb.',                   nemo:'CFIQFIA-E'},
+  {nombre:'Fynsa Deuda Inmob.',                nemo:'CFIFYDIA-E'},
+  {nombre:'Toesca us credit B',                nemo:'CFI-TUSCBE'},
+  {nombre:'HMC renta global usd bp',           nemo:'CFI-HRGDBP'},
+  {nombre:'HMC deuda privada global bp',       nemo:'CFI-HMCDGD'},
+  {nombre:'MBI Deuda estructurada',            nemo:'CFI-MBICHA'},
+  {nombre:'Falcom Chilean Fixed Income A',     nemo:'CFIFALCFIA'},
+  {nombre:'BTG Credito Privado A (Desde el 26/03/2026)', nemo:'CFIBTGCRPA'},
+  {nombre:'BTG Credito Privado B (Desde el 07/04/2026)', nemo:'CFIBTGCRPB'},
+  {nombre:'FM BTG Chile Acción F',             nemo:null}
+];
+
+// Normaliza un nombre del Excel para hacer match contra el mapeo
+function pulsoNormalizar(s) {
+  return String(s||'').toUpperCase()
+    .replace(/[ÁÀÄÂ]/g,'A').replace(/[ÉÈËÊ]/g,'E').replace(/[ÍÌÏÎ]/g,'I')
+    .replace(/[ÓÒÖÔ]/g,'O').replace(/[ÚÙÜÛ]/g,'U').replace(/Ñ/g,'N')
+    .replace(/[().,\-_]/g,' ')   // paréntesis, comas, guiones → espacio
+    .replace(/\s+/g,' ').trim();
+}
+
+// Extrae tokens "significativos" (mínimo 3 letras, no palabras vacías)
+const PULSO_STOPWORDS = new Set(['DE','DEL','LA','EL','LOS','LAS','UN','UNA','Y','EN','A','PARA','POR','CON','SIN','FONDO','FONDOS']);
+function pulsoTokens(s) {
+  return pulsoNormalizar(s).split(/\s+/).filter(t => t.length >= 2 && !PULSO_STOPWORDS.has(t));
+}
+
+const PULSO_MAPEO_NORM = PULSO_MAPEO
+  .filter(x => x.nemo)
+  .map(x => ({
+    nombreNorm: pulsoNormalizar(x.nombre),
+    tokens: pulsoTokens(x.nombre),
+    nombre: x.nombre,
+    nemo: x.nemo
+  }));
+
+function buscarNemoPorNombre(nombreExcel) {
+  const norm = pulsoNormalizar(nombreExcel);
+  if (!norm) return null;
+  
+  // 1. Exact match
+  let found = PULSO_MAPEO_NORM.find(x => x.nombreNorm === norm);
+  if (found) return found.nemo;
+  
+  // 2. Substring (en ambos sentidos)
+  found = PULSO_MAPEO_NORM.find(x => norm.includes(x.nombreNorm) || x.nombreNorm.includes(norm));
+  if (found) return found.nemo;
+  
+  // 3. Token overlap: el mapping y el nombre del Excel comparten todos los tokens significativos
+  const tokensExcel = pulsoTokens(nombreExcel);
+  if (!tokensExcel.length) return null;
+  
+  // Score = tokens que matchean / max(tokens del mapeo, tokens excel)
+  let bestScore = 0;
+  let bestNemo = null;
+  for (const m of PULSO_MAPEO_NORM) {
+    if (!m.tokens.length) continue;
+    const matched = m.tokens.filter(t => tokensExcel.includes(t)).length;
+    if (matched === 0) continue;
+    // Threshold: que matchee al menos 60% de los tokens del mapeo Y al menos 60% del Excel
+    const scoreMapeo = matched / m.tokens.length;
+    const scoreExcel = matched / tokensExcel.length;
+    const score = Math.min(scoreMapeo, scoreExcel);
+    if (score >= 0.6 && score > bestScore) {
+      bestScore = score;
+      bestNemo = m.nemo;
+    }
+  }
+  return bestNemo;
+}
+
+// Hojas del Excel que contienen historico (columna A=fecha, columnas B+=fondos)
+const PULSO_HOJAS_DATOS = [
+  'De la Casa','Renta Fija CP','Renta Fija MP','Renta Fija Internacional',
+  'Retorno total','Renta Variable local','Alternativos CLP','Alternativos USD',
+  'Comparables Albion'
+];
+
+function excelDateToISO(serial) {
+  // openpyxl/SheetJS date serial → YYYY-MM-DD
+  if (typeof serial === 'string') {
+    // Try parse as date string
+    const d = new Date(serial);
+    if (!isNaN(d)) return d.toISOString().slice(0,10);
+    return null;
+  }
+  if (typeof serial !== 'number' || serial <= 0) return null;
+  // Excel: days since 1900-01-01 (with bug)
+  const epoch = new Date(Date.UTC(1899, 11, 30));
+  const d = new Date(epoch.getTime() + serial * 86400000);
+  return d.toISOString().slice(0,10);
+}
+
+async function importarPulsoExcel(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = ''; // Reset for re-upload
+  
+  if (typeof XLSX === 'undefined') {
+    alert('SheetJS no cargó. Recargá la página.');
+    return;
+  }
+  
+  botMsg(`📊 Procesando <strong>${file.name}</strong>...`);
+  
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(buf), {type:'array', cellDates:false});
+    
+    const filas = [];   // {nemo, fecha, valor, fondo_nombre}
+    const noMapeados = new Set();
+    let totalCeldas = 0;
+    
+    for (const hojaNombre of PULSO_HOJAS_DATOS) {
+      const ws = wb.Sheets[hojaNombre];
+      if (!ws) continue;
+      
+      const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+      if (aoa.length < 3) continue;
+      
+      // Fila 0: título de categoría. Fila 1: ["Fecha", "Fondo A", "Fondo B", ...]
+      // Filas 2+: [fechaSerial, valorA, valorB, ...]
+      const headerRow = aoa[1] || [];
+      const fondosCol = []; // {colIdx, nemo, nombreOriginal}
+      
+      for (let c = 1; c < headerRow.length; c++) {
+        const nombreExcel = headerRow[c];
+        if (!nombreExcel || typeof nombreExcel !== 'string') continue;
+        // Skip "Div. Acum." y "Cuota + Div." (no son fondos sino agregados)
+        if (/div\.?\s*acum|cuota\s*\+\s*div/i.test(nombreExcel)) continue;
+        const nemo = buscarNemoPorNombre(nombreExcel);
+        if (nemo) {
+          fondosCol.push({colIdx:c, nemo, nombreOriginal:nombreExcel});
+        } else {
+          noMapeados.add(nombreExcel);
+        }
+      }
+      
+      // Recorrer filas de datos
+      for (let r = 2; r < aoa.length; r++) {
+        const row = aoa[r];
+        if (!row || !row[0]) continue;
+        const fechaIso = excelDateToISO(row[0]);
+        if (!fechaIso) continue;
+        
+        for (const fc of fondosCol) {
+          const val = row[fc.colIdx];
+          if (val == null || val === '' || isNaN(parseFloat(val))) continue;
+          filas.push({
+            nemo: fc.nemo,
+            fecha: fechaIso,
+            valor: parseFloat(val),
+            fondo_nombre: fc.nombreOriginal
+          });
+          totalCeldas++;
+        }
+      }
+    }
+    
+    if (!filas.length) {
+      botMsg('❌ No se encontraron valores cuota para subir. ¿Es el Excel correcto del Pulso?');
+      return;
+    }
+    
+    // Dedup por (nemo, fecha): última lectura gana
+    const dedupMap = new Map();
+    for (const f of filas) {
+      dedupMap.set(f.nemo+'|'+f.fecha, f);
+    }
+    const filasDedup = [...dedupMap.values()];
+    
+    botMsg(`📤 Subiendo <strong>${filasDedup.length}</strong> valores cuota a Supabase (${[...new Set(filasDedup.map(f=>f.nemo))].length} fondos)...`);
+    
+    // Upsert en batches de 500
+    const BATCH = 500;
+    let subidas = 0;
+    let errores = 0;
+    let firstError = null;
+    for (let i = 0; i < filasDedup.length; i += BATCH) {
+      const batch = filasDedup.slice(i, i+BATCH);
+      const {error} = await SB.from('valores_cuota').upsert(batch, {onConflict:'nemo,fecha'});
+      if (error) {
+        console.error('═══ Error batch', i, '═══');
+        console.error('Error completo:', error);
+        console.error('Sample del batch:', batch.slice(0,2));
+        if (!firstError) {
+          firstError = error;
+          // Mostrar alert con el error real solo la primera vez para diagnóstico
+          alert('Error subiendo valores cuota:\n\n' + 
+                'Mensaje: ' + (error.message || '(sin mensaje)') + '\n' +
+                'Code: ' + (error.code || '(sin code)') + '\n' +
+                'Hint: ' + (error.hint || '(sin hint)') + '\n' +
+                'Details: ' + (error.details || '(sin details)') + '\n\n' +
+                'Sample fila:\n' + JSON.stringify(batch[0], null, 2));
+        }
+        errores += batch.length;
+      } else {
+        subidas += batch.length;
+      }
+    }
+    
+    let msg = `✅ <strong>${subidas}</strong> valores cuota actualizados`;
+    if (errores) {
+      msg += ` · <span style="color:var(--warn)">${errores} con error</span>`;
+      if (firstError) {
+        msg += `<br><span style="color:var(--venta);font-size:11px;font-family:var(--mono)">${firstError.message || firstError.hint || JSON.stringify(firstError).slice(0,200)}</span>`;
+        // Hints según el tipo de error
+        const errStr = JSON.stringify(firstError).toLowerCase();
+        if (errStr.includes('does not exist') || errStr.includes('relation') || errStr.includes('schema')) {
+          msg += `<br><span style="color:var(--text2);font-size:11px">→ La tabla <code>valores_cuota</code> no existe. Corré el SQL primero en Supabase.</span>`;
+        } else if (errStr.includes('row-level security') || errStr.includes('rls') || errStr.includes('policy')) {
+          msg += `<br><span style="color:var(--text2);font-size:11px">→ RLS bloqueando insert. Corré: <code>ALTER TABLE valores_cuota DISABLE ROW LEVEL SECURITY;</code></span>`;
+        } else if (errStr.includes('permission') || errStr.includes('denied')) {
+          msg += `<br><span style="color:var(--text2);font-size:11px">→ Falta permiso. Verificá las policies de la tabla en Supabase.</span>`;
+        }
+      }
+    }
+    if (noMapeados.size) {
+      msg += `<br><span style="color:var(--text2);font-size:11px">Sin nemo mapeado: ${[...noMapeados].slice(0,5).join(', ')}${noMapeados.size>5?'...':''}</span>`;
+    }
+    botMsg(msg);
+    
+    // ── Extraer hoja "Cuadro resumen" y guardar como snapshot JSON ──
+    if (subidas > 0) {
+      try {
+        const snapshot = extraerCuadroResumen(wb);
+        if (snapshot) {
+          const {error: snapErr} = await SB.from('pulso_snapshot').upsert({
+            id: 1, snapshot, actualizado_en: new Date().toISOString()
+          }, {onConflict: 'id'});
+          if (snapErr) console.error('Error guardar snapshot:', snapErr);
+          else console.log('Snapshot Pulso guardado OK');
+        }
+      } catch(e) {
+        console.error('Error extraer cuadro resumen:', e);
+      }
+    }
+    
+    // Refrescar cache local
+    await cargarValoresCuotaCache();
+    
+  } catch (e) {
+    console.error('Pulso import error:', e);
+    botMsg(`❌ Error procesando el Excel: ${e.message}`);
+  }
+}
+
+// ─── Cache local de valores cuota más recientes (para resolución rápida "a NAV") ───
+let VALORES_CUOTA_CACHE = {}; // nemo → {fecha, valor}
+
+async function cargarValoresCuotaCache() {
+  try {
+    // Trae el último valor por nemo
+    const {data, error} = await SB.from('valores_cuota')
+      .select('nemo,fecha,valor')
+      .order('fecha', {ascending:false})
+      .limit(5000);
+    if (error) { console.error('Error cache VC:', error); return; }
+    VALORES_CUOTA_CACHE = {};
+    for (const r of (data||[])) {
+      if (!VALORES_CUOTA_CACHE[r.nemo]) {
+        VALORES_CUOTA_CACHE[r.nemo] = {fecha:r.fecha, valor:Number(r.valor)};
+      }
+    }
+    console.log('Cache VC cargado:', Object.keys(VALORES_CUOTA_CACHE).length, 'nemos');
+  } catch(e) {
+    console.error('Error cargar cache VC:', e);
+  }
+}
+
+// Devuelve el último valor cuota del nemo, o null si no existe
+function getValorCuotaNAV(nemo) {
+  if (!nemo) return null;
+  const up = nemo.toUpperCase().trim();
+  return VALORES_CUOTA_CACHE[up] || null;
+}
+
+// Lanzar la carga al iniciar (después de SB)
+setTimeout(() => {
+  if (typeof SB !== 'undefined' && SB) cargarValoresCuotaCache();
+}, 2000);
 
 // Show email dest field when checkbox is toggled for aportes
 document.addEventListener('change', e => {
