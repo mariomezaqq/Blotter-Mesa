@@ -3420,7 +3420,9 @@ function resolveCliente(text) {
     // Forma de pago
     'CHEQUE','CARGO','EFECTIVO','BANCARIA',
     // Otros
-    'FONDO','FM','FDO','FFMM','FONDOS','MUTUO','MUTUOS','INVERSION','INVERSIÓN','SOCIEDAD','LTDA','SPA','SA'
+    'FONDO','FM','FDO','FFMM','FONDOS','MUTUO','MUTUOS','INVERSION','INVERSIÓN','SOCIEDAD','LTDA','SPA','SA',
+    // NAV / valor cuota — palabras reservadas para precio
+    'NAV','VC','VALOR','CUOTA','TOAL'
   ]);
 
   // Use continuous-block matching: find longest run of name-like words
@@ -3514,7 +3516,8 @@ function extractNameCandidate(text) {
     'DEL','DELS','A','E','Y','O','SU','SUS','MI','MIS','PRECIO','CUOTAS','ACCIONES',
     'PALOS','MILLONES','LUCAS','FONDO','SERIE','RESCATE','APORTE','SALDO','HACER',
     'HACEME','HAZ','HAGA','QUIERO','TOTAL','DEUDA','ALTERNATIVA','LIQUIDEZ','ENFOQUE',
-    'RENTA','FIJA','VARIABLE','PLAZO','NP','LTM','LATAM','CUENTA','CTA']);
+    'RENTA','FIJA','VARIABLE','PLAZO','NP','LTM','LATAM','CUENTA','CTA',
+    'NAV','VC','VALOR','CUOTA','TOAL']);  // TOAL = misspelling de TOTAL común
 
   const nemoWords = new Set();
   for (const [nemo, aliases] of Object.entries(NEMO_ALIASES)) {
@@ -3738,9 +3741,20 @@ function detectarCCBanquero(text) {
 // PARSE ORDEN
 // ═══════════════════════════════════════════════════════════
 function parseOrden(text, forceOp) {
+  // Detectar y eliminar "a NAV" / "a valor cuota" / "a VC" del texto global
+  // antes de cualquier parsing, para que no interfiera con cliente/nemo
+  let navFlagGlobal = false;
+  const navReGlobal = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
+  if (navReGlobal.test(text)) {
+    navFlagGlobal = true;
+    text = text.replace(navReGlobal, ' ').replace(/\s+/g,' ').trim();
+  }
+  
   const op = forceOp || (/\b(VENTA|VENDER|VENDO)\b/i.test(text) ? 'VENTA' : 'COMPRA');
 
   const {cantidad, precio, monto, navFlag} = extractCantidadYPrecio(text);
+  // Si lo detectamos arriba, propagamos
+  const navFinalFlag = navFlag || navFlagGlobal;
   let condicion = '';
   const upT = text.toUpperCase();
   if (/\bPH\b/.test(upT) || /\b(paga\s+hoy|pagahoy)\b/i.test(text))       condicion = 'PH';
@@ -3791,7 +3805,7 @@ function parseOrden(text, forceOp) {
     cliente: clientResult?.nombre || '',
     rut:     clientResult?.rut    || '',
     clienteResult: clientResult,
-    navFlag,
+    navFlag: navFinalFlag,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
