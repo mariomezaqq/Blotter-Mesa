@@ -3248,13 +3248,37 @@ function parseMontoNatural(text) {
 // Extracts {cantidad, precio, monto} from natural language
 // Strategy: strip noise first, then identify each number's role by context
 function extractCantidadYPrecio(text) {
-  let cantidad = null, precio = null, monto = null, navFlag = false;
+  let cantidad = null, precio = null, monto = null, navFlag = false, navDelta = 0;
 
   // Step 0: detectar "a NAV", "a valor cuota", "a vc", "al valor cuota" → flag para resolver después
+  // También capturar descuento/premium: "a NAV con 0,1 descuento" / "a NAV -0,1" / "a NAV +0,2"
   const navRe = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navRe.test(text)) {
     navFlag = true;
-    text = text.replace(navRe, ''); // remove para no estorbar parseo
+    
+    // Buscar descuento/premium DESPUÉS de NAV
+    // Formatos: "NAV con 0,1 descuento", "NAV menos 0,1", "NAV -0,1", "NAV con descuento 0,1", "NAV +0,2", "NAV mas 0,1", "NAV con 0,2 premium"
+    const navContextRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
+    const m = text.match(navContextRe);
+    if (m) {
+      const num = parseFloat(m[2].replace(',', '.'));
+      if (!isNaN(num) && num > 0) {
+        // Determinar signo
+        const pre = (m[1]||'').toLowerCase().trim();
+        const post = (m[4]||'').toLowerCase().trim();
+        const indicator = pre || post;
+        if (indicator) {
+          const isNeg = /^(-|menos|descuento)/i.test(indicator);
+          const isPos = /^(\+|m[áa]s|mas|premium)/i.test(indicator);
+          if (isNeg) navDelta = -num;
+          else if (isPos) navDelta = num;
+        }
+      }
+    }
+    
+    // Eliminar todo el bloque NAV+descuento/premium del texto para no estorbar
+    const navRemoveRe = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(?:\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(?:\d+[.,]?\d*\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(?:descuento|premium|menos|m[áa]s|mas|\+|-)?)?/i;
+    text = text.replace(navRemoveRe, ' ').replace(/\s+/g, ' ').trim();
   }
 
   // Step 1: mask non-financial numbers so they don't bleed into parsing
@@ -3310,7 +3334,7 @@ function extractCantidadYPrecio(text) {
     precio = nums[0];
   }
 
-  return {cantidad, precio, monto, navFlag};
+  return {cantidad, precio, monto, navFlag, navDelta};
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3746,17 +3770,37 @@ function parseOrden(text, forceOp) {
   // Detectar y eliminar "a NAV" / "a valor cuota" / "a VC" del texto global
   // antes de cualquier parsing, para que no interfiera con cliente/nemo
   let navFlagGlobal = false;
+  let navDeltaGlobal = 0;
   const navReGlobal = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navReGlobal.test(text)) {
     navFlagGlobal = true;
-    text = text.replace(navReGlobal, ' ').replace(/\s+/g,' ').trim();
+    
+    // Detectar descuento/premium ANTES de borrar
+    const navCtxRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
+    const m = text.match(navCtxRe);
+    if (m) {
+      const num = parseFloat(m[2].replace(',', '.'));
+      if (!isNaN(num) && num > 0) {
+        const indicator = ((m[1]||'') + ' ' + (m[3]||'')).toLowerCase().trim();
+        if (/^(-|menos|descuento)/i.test(indicator) || / (-|menos|descuento)/.test(indicator)) {
+          navDeltaGlobal = -num;
+        } else if (/^(\+|m[áa]s|mas|premium)/i.test(indicator) || / (\+|m[áa]s|mas|premium)/.test(indicator)) {
+          navDeltaGlobal = num;
+        }
+      }
+    }
+    
+    // Eliminar el bloque entero NAV + descuento del texto
+    const navRemove = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(?:\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(?:\d+[.,]?\d*\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(?:descuento|premium|menos|m[áa]s|mas|\+|-)?)?/i;
+    text = text.replace(navRemove, ' ').replace(/\s+/g,' ').trim();
   }
   
   const op = forceOp || (/\b(VENTA|VENDER|VENDO)\b/i.test(text) ? 'VENTA' : 'COMPRA');
 
-  const {cantidad, precio, monto, navFlag} = extractCantidadYPrecio(text);
+  const {cantidad, precio, monto, navFlag, navDelta} = extractCantidadYPrecio(text);
   // Si lo detectamos arriba, propagamos
   const navFinalFlag = navFlag || navFlagGlobal;
+  const navFinalDelta = navDelta || navDeltaGlobal;
   let condicion = '';
   const upT = text.toUpperCase();
   if (/\bPH\b/.test(upT) || /\b(paga\s+hoy|pagahoy)\b/i.test(text))       condicion = 'PH';
@@ -3808,6 +3852,7 @@ function parseOrden(text, forceOp) {
     rut:     clientResult?.rut    || '',
     clienteResult: clientResult,
     navFlag: navFinalFlag,
+    navDelta: navFinalDelta,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -3986,10 +4031,24 @@ function checkMissingAndConfirm(parsed) {
   if (parsed.type === 'orden' && parsed.navFlag && (!parsed.precio || Number(parsed.precio) <= 0) && parsed.nemo) {
     const vc = getValorCuotaNAV(parsed.nemo);
     if (vc) {
-      parsed.precio = vc.valor;
+      const navBase = vc.valor;
+      const delta = parsed.navDelta || 0;
+      // delta es % (ej: 0.1 = 0.1%); aplicar como multiplicador
+      const precioFinal = navBase * (1 + delta / 100);
+      // Redondear a 2 decimales
+      parsed.precio = Math.round(precioFinal * 100) / 100;
       parsed.navFlag = false;
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
-      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
+      const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
+      const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
+      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
+      if (delta !== 0) {
+        const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
+        mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
+      } else {
+        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
+      }
+      botMsg(mensaje);
     } else {
       botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
       chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4325,10 +4384,23 @@ function continuarFlujoCruce(parsed) {
   if (parsed.navFlag && !parsed.precio && parsed.nemo) {
     const vc = getValorCuotaNAV(parsed.nemo);
     if (vc) {
-      parsed.precio = vc.valor;
+      const navBase = vc.valor;
+      const delta = parsed.navDelta || 0;
+      const precioFinal = navBase * (1 + delta / 100);
+      // Redondear a 2 decimales
+      parsed.precio = Math.round(precioFinal * 100) / 100;
       parsed.navFlag = false;
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
-      botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4})}</strong>`);
+      const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
+      const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
+      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
+      if (delta !== 0) {
+        const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
+        mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
+      } else {
+        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
+      }
+      botMsg(mensaje);
     } else {
       botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso primero (botón 📊 Pulso arriba), o escribime el precio manualmente.`);
       chatContext = {state:'await_missing_field', field:'precio', parsed};
@@ -4893,10 +4965,22 @@ function parseCruce(text) {
   // ── Precio ────────────────────────────────────────────────
   let precio = null;
   let navFlag = false;
-  // Primero: "a NAV", "a valor cuota", "a VC"
+  let navDelta = 0;
+  // Primero: "a NAV" con descuento/premium opcional
   const navReCruce = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\b/i;
   if (navReCruce.test(text)) {
     navFlag = true;
+    // Detectar descuento/premium
+    const navCtxRe = /(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(\d+[.,]?\d*)\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(descuento|premium|menos|m[áa]s|mas|\+|-)?/i;
+    const m = text.match(navCtxRe);
+    if (m) {
+      const num = parseFloat(m[2].replace(',', '.'));
+      if (!isNaN(num) && num > 0) {
+        const indicator = ((m[1]||'') + ' ' + (m[3]||'')).toLowerCase().trim();
+        if (/(-|menos|descuento)/i.test(indicator)) navDelta = -num;
+        else if (/(\+|m[áa]s|mas|premium)/i.test(indicator)) navDelta = num;
+      }
+    }
   } else {
     const precioM = text.match(/(?:a|precio)\s+(\d[\d.,]*)/i);
     if (precioM) {
@@ -5120,7 +5204,7 @@ function parseCruce(text) {
     type: 'cruce', nemo, nemoResult, nemoFound,
     precio, condicion, corredora,
     vendedores, compradores,
-    navFlag,
+    navFlag, navDelta,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
