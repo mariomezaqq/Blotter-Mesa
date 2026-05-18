@@ -2576,6 +2576,7 @@ async function showSection(name, el) {
     renderBanqueros();
     console.log('[Banqueros] CURRENT_USER rol:', CURRENT_USER?.rol, '| isAdmin:', ['admin','administrador'].includes((CURRENT_USER?.rol||'').toLowerCase()));
   }
+  else if(name==='pulso') await renderPulso();
   else if(name==='config') renderConfigUI();
 }
 function setOp(op) {
@@ -7310,6 +7311,313 @@ function getValorCuotaNAV(nemo) {
   if (!nemo) return null;
   const up = nemo.toUpperCase().trim();
   return VALORES_CUOTA_CACHE[up] || null;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PULSO VCC — Dashboard
+// ═════════════════════════════════════════════════════════════════════════════
+
+function extraerCuadroResumen(wb) {
+  const ws = wb.Sheets['Cuadro resumen'];
+  if (!ws) return null;
+  const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+  if (!aoa.length) return null;
+  
+  const snapshot = {
+    titulo: String(aoa[0]?.[0] || 'Pulso VCC'),
+    indices_macro: [],
+    rf_usa_headers: [],
+    rf_usa: [],
+    categorias: []
+  };
+  
+  let i = 0;
+  let inMacro = false;
+  let inRFUSA = false;
+  let currentCat = null;
+  
+  while (i < aoa.length) {
+    const row = aoa[i] || [];
+    const c0 = String(row[0] || '').trim();
+    const c0Low = c0.toLowerCase();
+    
+    if (c0Low === 'indices macro' || c0Low === 'índices macro') { 
+      inMacro = true; inRFUSA = false; currentCat = null; i++; continue; 
+    }
+    if (c0Low === 'renta fija usa') { 
+      inRFUSA = true; inMacro = false; currentCat = null; i++; continue; 
+    }
+    
+    if (c0Low === 'indice' || c0Low === 'índice') {
+      if (inRFUSA) snapshot.rf_usa_headers = row.slice(1).filter(x => x != null).map(String);
+      i++; continue;
+    }
+    if (c0Low === 'fondo') { i++; continue; }
+    
+    // Título de categoría: texto en c0, resto vacío, próxima fila empieza con "Fondo"
+    const nextRow = aoa[i+1] || [];
+    const nextC0Low = String(nextRow[0]||'').toLowerCase();
+    if (c0 && row.slice(1).every(x => x == null) && nextC0Low === 'fondo') {
+      currentCat = {nombre: c0, fondos: []};
+      snapshot.categorias.push(currentCat);
+      inMacro = false; inRFUSA = false;
+      i += 2;
+      continue;
+    }
+    
+    // Filas de datos
+    if (c0 && !inMacro && !inRFUSA && currentCat) {
+      currentCat.fondos.push({
+        nombre: c0,
+        mtd: row[1], ytd: row[2], y2025: row[3], y2024: row[4],
+        duracion: row[5], liquidez: row[6], moneda: row[7], tac: row[8]
+      });
+    } else if (c0 && inMacro) {
+      snapshot.indices_macro.push({nombre: c0, wtd: row[1], mtd: row[2], ytd: row[3]});
+    } else if (c0 && inRFUSA) {
+      snapshot.rf_usa.push({nombre: c0, valores: row.slice(1, 5)});
+    }
+    i++;
+  }
+  
+  return snapshot;
+}
+
+function fmtPctPulso(v) {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'number') {
+    const pct = v * 100;
+    const sign = pct >= 0 ? '+' : '';
+    return sign + pct.toFixed(2) + '%';
+  }
+  return String(v);
+}
+
+function classPctPulso(v) {
+  if (v == null || v === '') return 'neutral';
+  if (typeof v === 'number') return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neutral';
+  const s = String(v).trim();
+  if (s.startsWith('+')) return 'pos';
+  if (s.startsWith('-')) return 'neg';
+  return 'neutral';
+}
+
+let PULSO_SNAPSHOT = null;
+let PULSO_TAB_ACTIVE = 'resumen';
+
+async function cargarPulsoSnapshot() {
+  try {
+    const {data, error} = await SB.from('pulso_snapshot').select('snapshot,actualizado_en').eq('id', 1).maybeSingle();
+    if (error) { console.error('Error cargar snapshot:', error); return null; }
+    if (data?.snapshot) {
+      PULSO_SNAPSHOT = data.snapshot;
+      const upd = data.actualizado_en ? new Date(data.actualizado_en).toLocaleString('es-CL') : '';
+      const lbl = document.getElementById('pulso-last-update');
+      if (lbl) lbl.textContent = upd ? '⏱ ' + upd : '';
+      return PULSO_SNAPSHOT;
+    }
+    return null;
+  } catch(e) {
+    console.error('Pulso snapshot error:', e);
+    return null;
+  }
+}
+
+async function renderPulso() {
+  const tabsEl = document.getElementById('pulso-tabs');
+  const contentEl = document.getElementById('pulso-content');
+  if (!tabsEl || !contentEl) return;
+  
+  await cargarPulsoSnapshot();
+  
+  if (!PULSO_SNAPSHOT) {
+    tabsEl.innerHTML = '';
+    contentEl.innerHTML = `
+      <div style="padding:50px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--r);color:var(--text2);background:var(--surface)">
+        <div style="font-size:36px;margin-bottom:12px">📊</div>
+        <div style="font-size:14px;color:var(--text);margin-bottom:6px;font-weight:600">Sin datos del Pulso todavía</div>
+        <div style="font-size:11px;margin-bottom:16px">Importá el Excel <code style="background:var(--surface2);padding:2px 6px;border-radius:3px">file_show.xlsx</code> para ver el dashboard</div>
+        <button class="btn" onclick="document.getElementById('pulso-file-input').click()">📊 Importar Excel</button>
+      </div>`;
+    return;
+  }
+  
+  // Construir tabs
+  const tabs = [
+    {id: 'resumen', label: 'Resumen'},
+    {id: 'macro',   label: 'Macro'},
+    ...(PULSO_SNAPSHOT.categorias || []).map((c, idx) => ({id: 'cat-'+idx, label: c.nombre}))
+  ];
+  
+  tabsEl.innerHTML = tabs.map(t => {
+    const isActive = t.id === PULSO_TAB_ACTIVE;
+    return `<button onclick="selectPulsoTab('${t.id}')"
+      style="padding:9px 14px;background:${isActive?'var(--surface2)':'transparent'};
+             color:${isActive?'var(--accent)':'var(--text2)'};
+             border:none;border-bottom:2px solid ${isActive?'var(--accent)':'transparent'};
+             font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;
+             text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;
+             transition:all .15s">${t.label}</button>`;
+  }).join('');
+  
+  if (PULSO_TAB_ACTIVE === 'resumen') {
+    contentEl.innerHTML = renderPulsoResumen();
+  } else if (PULSO_TAB_ACTIVE === 'macro') {
+    contentEl.innerHTML = renderPulsoMacro();
+  } else if (PULSO_TAB_ACTIVE.startsWith('cat-')) {
+    const idx = parseInt(PULSO_TAB_ACTIVE.replace('cat-',''));
+    contentEl.innerHTML = renderPulsoCategoria(PULSO_SNAPSHOT.categorias[idx]);
+  }
+}
+
+function selectPulsoTab(tabId) {
+  PULSO_TAB_ACTIVE = tabId;
+  renderPulso();
+}
+
+function pulsoCellClass(v) {
+  const c = classPctPulso(v);
+  if (c === 'pos') return 'color:var(--accent);font-weight:600;background:rgba(0,229,150,0.08)';
+  if (c === 'neg') return 'color:var(--venta);font-weight:600;background:rgba(255,80,80,0.08)';
+  return 'color:var(--text2)';
+}
+
+function renderTablaFondos(fondos, mostrarPromedio=true) {
+  if (!fondos?.length) return '<div style="padding:20px;color:var(--text2);text-align:center">Sin fondos</div>';
+  
+  const ultVC = (nombreExcel) => {
+    const nemo = buscarNemoPorNombre(nombreExcel);
+    if (!nemo) return null;
+    return VALORES_CUOTA_CACHE[nemo];
+  };
+  
+  const filas = fondos.map(f => {
+    const vc = ultVC(f.nombre);
+    const nemo = buscarNemoPorNombre(f.nombre);
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 12px">
+        <div style="color:var(--text);font-weight:600;font-size:12px">${f.nombre}</div>
+        ${nemo ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text2);margin-top:1px">${nemo}</div>` : ''}
+      </td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(f.mtd)}">${fmtPctPulso(f.mtd)}</td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(f.ytd)}">${fmtPctPulso(f.ytd)}</td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text2)">${fmtPctPulso(f.y2025)}</td>
+      <td style="padding:8px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text2)">${fmtPctPulso(f.y2024)}</td>
+      <td style="padding:8px 12px;text-align:center;color:var(--text2);font-size:11px">${f.duracion??'—'}</td>
+      <td style="padding:8px 12px;text-align:center;color:var(--text2);font-size:10px">${f.liquidez??'—'}</td>
+      <td style="padding:8px 12px;text-align:center"><span style="font-family:var(--mono);font-size:9px;background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:3px">${f.moneda??'—'}</span></td>
+      <td style="padding:8px 12px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600">${vc?vc.valor.toLocaleString('es-CL',{maximumFractionDigits:4}):'—'}</td>
+    </tr>`;
+  }).join('');
+  
+  let promHtml = '';
+  if (mostrarPromedio && fondos.length > 1) {
+    const num = v => typeof v === 'number' ? v : null;
+    const vals = k => fondos.map(f=>num(f[k])).filter(v=>v!=null);
+    const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
+    const fmt = v => v == null ? '—' : fmtPctPulso(v);
+    const a_mtd = avg(vals('mtd'));
+    const a_ytd = avg(vals('ytd'));
+    const a_25 = avg(vals('y2025'));
+    const a_24 = avg(vals('y2024'));
+    promHtml = `<tr style="background:var(--surface2);border-top:2px solid var(--accent)">
+      <td style="padding:9px 12px;font-weight:700;color:var(--accent);text-transform:uppercase;font-size:10px;letter-spacing:.05em">Promedio</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${fmt(a_mtd)}</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--accent)">${fmt(a_ytd)}</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--text2);font-size:10px">${fmt(a_25)}</td>
+      <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--text2);font-size:10px">${fmt(a_24)}</td>
+      <td colspan="4"></td>
+    </tr>`;
+  }
+  
+  return `<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
+          <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Fondo</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">MTD</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">YTD</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">2025</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">2024</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Dur.</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Liquidez</th>
+          <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Mon.</th>
+          <th style="padding:9px 12px;text-align:right;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Último VC</th>
+        </tr>
+      </thead>
+      <tbody>${filas}${promHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderPulsoResumen() {
+  let html = '';
+  if (PULSO_SNAPSHOT.titulo) {
+    html += `<div style="font-size:11px;color:var(--text2);font-family:var(--mono);margin-bottom:14px">// ${PULSO_SNAPSHOT.titulo}</div>`;
+  }
+  for (const cat of (PULSO_SNAPSHOT.categorias || [])) {
+    html += `<div style="margin-bottom:24px">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">${cat.nombre}</div>
+      ${renderTablaFondos(cat.fondos, false)}
+    </div>`;
+  }
+  return html;
+}
+
+function renderPulsoCategoria(cat) {
+  if (!cat) return '<div style="color:var(--text2)">Categoría no encontrada</div>';
+  return `<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:12px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em">// ${cat.nombre}</div>
+    ${renderTablaFondos(cat.fondos, true)}`;
+}
+
+function renderPulsoMacro() {
+  const m = PULSO_SNAPSHOT.indices_macro || [];
+  const r = PULSO_SNAPSHOT.rf_usa || [];
+  const headersRF = PULSO_SNAPSHOT.rf_usa_headers || ['Cierre','Anterior','Actual'];
+  
+  const filasMacro = m.map(i => `<tr style="border-bottom:1px solid var(--border)">
+    <td style="padding:9px 12px;color:var(--text);font-weight:600">${i.nombre}</td>
+    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.wtd)}">${fmtPctPulso(i.wtd)}</td>
+    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.mtd)}">${fmtPctPulso(i.mtd)}</td>
+    <td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;${pulsoCellClass(i.ytd)}">${fmtPctPulso(i.ytd)}</td>
+  </tr>`).join('');
+  
+  const filasRF = r.map(i => {
+    const vals = i.valores || [];
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:9px 12px;color:var(--text);font-weight:600">${i.nombre}</td>
+      ${vals.map(v => `<td style="padding:9px 12px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text)">${v==null?'—':v}</td>`).join('')}
+    </tr>`;
+  }).join('');
+  
+  return `
+    <div style="margin-bottom:24px">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">// Índices Macro</div>
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
+            <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Índice</th>
+            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">WTD</th>
+            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">MTD</th>
+            <th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">YTD</th>
+          </tr></thead>
+          <tbody>${filasMacro}</tbody>
+        </table>
+      </div>
+    </div>
+    ${r.length ? `<div>
+      <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.05em;font-family:var(--mono)">// Renta Fija USA</div>
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
+            <th style="padding:9px 12px;text-align:left;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">Índice</th>
+            ${headersRF.map(h => `<th style="padding:9px 12px;text-align:center;font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;font-weight:600">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${filasRF}</tbody>
+        </table>
+      </div>
+    </div>` : ''}
+  `;
 }
 
 // Lanzar la carga al iniciar (después de SB)
