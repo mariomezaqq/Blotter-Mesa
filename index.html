@@ -4509,7 +4509,28 @@ function processBloque(text) {
   
   // Si el usuario eligió tipo explícitamente, respetar
   if (TIPO_OP_FORZADO === 'cruce') {
-    parseCruce(text);
+    // Aplicar las mismas normalizaciones que processCommand
+    let t = text
+      .replace(/\bcomprale\b/gi, 'compra').replace(/\bcómprale\b/gi, 'compra')
+      .replace(/\bvendele\b/gi, 'venta').replace(/\bvéndale\b/gi, 'venta')
+      .replace(/\bvendale\b/gi, 'venta')
+      .replace(/\bdel\s+/gi, 'de ').replace(/\bal\s+/gi, 'a ');
+    
+    // Detectar CC banquero
+    const cc = detectarCCBanquero(t);
+    if (cc.emails.length || cc.noEncontrados.length) {
+      t = cc.textoLimpio;
+      window._pendingCCBanqueros = cc;
+    } else {
+      window._pendingCCBanqueros = null;
+    }
+    
+    try {
+      parseCruce(t);
+    } catch(e) {
+      console.error('parseCruce error:', e);
+      botMsg('❌ Error procesando el cruce: ' + (e.message || 'error desconocido') + '. Intentá reformular.');
+    }
     return;
   }
   if (TIPO_OP_FORZADO === 'orden') {
@@ -4887,6 +4908,24 @@ function parseCruce(text) {
     while ((m = patronVenta.exec(text)) !== null) {
       const n = cleanName(m[1]);
       if (n) nombresVenta.push(n);
+    }
+    
+    // ── Patrones inversos: nombre DESPUÉS del verbo con pronombre ──
+    // "los compra Iker Aspillaga", "se las vende Pedro", "le compra Mario"
+    const pronObl = '(?:l[oa]s?\\s+|se\\s+l[oa]s?\\s+|les?\\s+)';
+    const patronCompraPost = new RegExp('\\b' + pronObl + '(?:compra[sn]?|quiere\\s+comprar)\\s+' + nombreRe, 'gi');
+    const patronVentaPost  = new RegExp('\\b' + pronObl + '(?:vende[sn]?|quiere\\s+vender)\\s+' + nombreRe, 'gi');
+    
+    patronCompraPost.lastIndex = 0;
+    while ((m = patronCompraPost.exec(text)) !== null) {
+      const n = cleanName(m[1]);
+      if (n && !nombresCompra.includes(n)) nombresCompra.push(n);
+    }
+    
+    patronVentaPost.lastIndex = 0;
+    while ((m = patronVentaPost.exec(text)) !== null) {
+      const n = cleanName(m[1]);
+      if (n && !nombresVenta.includes(n)) nombresVenta.push(n);
     }
 
     if (nombresCompra.length || nombresVenta.length) {
