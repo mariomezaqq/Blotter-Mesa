@@ -1298,7 +1298,15 @@ tr:hover td{background:var(--surface2)}
           <div class="chat-title">// ASISTENTE MESA</div>
           <div class="chat-status" id="chat-status-bar">Listo · escribí la orden en lenguaje natural</div>
         </div>
-        <button class="chat-toggle-btn" onclick="setViewMode('form')" title="Ocultar chat">→</button>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button id="chat-email-auto-btn" onclick="toggleEmailAutomaticoQuick()" 
+            style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);border-radius:6px;font-size:10px;font-family:var(--mono);font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:.05em;transition:all .15s"
+            title="Click para cambiar">
+            <span id="chat-email-auto-dot" style="width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block"></span>
+            <span id="chat-email-auto-text">Email manual</span>
+          </button>
+          <button class="chat-toggle-btn" onclick="setViewMode('form')" title="Ocultar chat">→</button>
+        </div>
       </div>
       <div class="chat-messages" id="chat-messages"></div>
       <div class="chat-input-area">
@@ -1742,6 +1750,8 @@ async function initApp(user) {
   setViewMode('chat');
   chatWelcome();
   renderChatFrecuentes();
+  // Sincronizar el botón de email auto en el chat
+  setTimeout(() => updateEmailAutoUI(CURRENT_USER?.email_automatico === true), 200);
 }
 
 function renderChatFrecuentes() {
@@ -2803,16 +2813,26 @@ function abrirPendientesGlobal() {
 let EDITOR_CTX = null;  // {tabla, id, row}
 
 async function abrirEditorOperacion(tabla, id) {
-  // Buscar la fila en cache
   const cache = tabla === 'ordenes' ? ORDENES_CACHE : APORTES_CACHE;
   let row = cache.find(r => r.id === id);
   if (!row) {
-    // Recargar
     const {data} = await SB.from(tabla).select('*').eq('id', id).single();
     if (!data) { alert('No encontré la operación'); return; }
     row = data;
   }
-  EDITOR_CTX = {tabla, id, row, original: {...row}};
+  
+  // Si tiene letra_op, buscar TODAS las filas del mismo grupo
+  let grupo = [row];
+  if (row.letra_op) {
+    grupo = cache.filter(r => r.letra_op === row.letra_op && r.fecha === row.fecha);
+    // Si en cache hay menos de las que esperamos, recargar de BD
+    if (grupo.length <= 1) {
+      const {data} = await SB.from(tabla).select('*').eq('fecha', row.fecha).eq('letra_op', row.letra_op);
+      if (data && data.length) grupo = data;
+    }
+  }
+  
+  EDITOR_CTX = {tabla, id, row, grupo, original: JSON.parse(JSON.stringify(grupo))};
   renderEditorModal();
 }
 
@@ -2828,15 +2848,113 @@ function renderEditorModal() {
   if (prev) prev.remove();
   
   if (!EDITOR_CTX) return;
-  const {tabla, row} = EDITOR_CTX;
+  const {tabla, grupo, row} = EDITOR_CTX;
   const isOrden = tabla === 'ordenes';
+  const isGrupo = grupo.length > 1;
   
-  const estado = row.email_estado || (row.email_enviado ? 'enviado' : 'pendiente');
-  const estadoLabel = estado === 'enviado' ? '✅ Enviado' : estado === 'fallo' ? '❌ Falló envío' : '🕓 Pendiente';
-  const estadoColor = estado === 'enviado' ? 'var(--accent)' : estado === 'fallo' ? 'var(--venta)' : 'var(--warn)';
+  // Estado consolidado del grupo (el "peor" gana: si alguna pendiente → pendiente)
+  const estados = grupo.map(r => r.email_estado || (r.email_enviado ? 'enviado' : 'pendiente'));
+  let estadoConjunto = 'enviado';
+  if (estados.includes('pendiente')) estadoConjunto = 'pendiente';
+  else if (estados.includes('fallo')) estadoConjunto = 'fallo';
+  
+  const estadoLabel = estadoConjunto === 'enviado' ? '✅ Enviado' : estadoConjunto === 'fallo' ? '❌ Falló envío' : '🕓 Pendiente';
+  const estadoColor = estadoConjunto === 'enviado' ? 'var(--accent)' : estadoConjunto === 'fallo' ? 'var(--venta)' : 'var(--warn)';
+  
+  // Título: identificador de la orden grupal
+  let tituloId = `#${row.id}`;
+  if (row.letra_op) {
+    const fechaCorta = row.fecha?.split('-').slice(1).reverse().join('-') || '';
+    tituloId = `Orden ${fechaCorta}${row.letra_op}`;
+  }
+  
+  const tipoLabel = isGrupo 
+    ? (isOrden ? `CRUCE / BLOQUE (${grupo.length} legs)` : `${grupo.length} APORTES`)
+    : (isOrden ? 'ORDEN' : 'APORTE');
   
   let fieldsHtml = '';
-  if (isOrden) {
+  
+  if (isGrupo && isOrden) {
+    // ─── Cruce/Bloque agrupado ───
+    // Campos COMPARTIDOS (mismos para todas las legs)
+    fieldsHtml = `
+      <div style="background:var(--surface2);padding:12px 14px;border-radius:8px;margin-bottom:14px;border:1px solid var(--border)">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">// DATOS COMPARTIDOS DEL GRUPO</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+          <div class="field"><label>Nemo</label><input id="ed-grupo-nemo" type="text" value="${row.nemo||''}"></div>
+          <div class="field"><label>Corredora</label><input id="ed-grupo-corredora" type="text" value="${row.corredora||''}"></div>
+          <div class="field"><label>Condición</label>
+            <select id="ed-grupo-condicion">
+              <option value=""${!row.condicion?' selected':''}>—</option>
+              <option value="PH"${row.condicion==='PH'?' selected':''}>PH</option>
+              <option value="PM"${row.condicion==='PM'?' selected':''}>PM</option>
+              <option value="CN"${row.condicion==='CN'?' selected':''}>CN</option>
+            </select>
+          </div>
+          <div class="field"><label>Precio</label><input id="ed-grupo-precio" type="number" step="0.01" value="${row.precio||''}"></div>
+          <div class="field"><label>Moneda</label>
+            <select id="ed-grupo-moneda">
+              <option${row.moneda==='CLP'?' selected':''}>CLP</option>
+              <option${row.moneda==='USD'?' selected':''}>USD</option>
+              <option${row.moneda==='UF'?' selected':''}>UF</option>
+            </select>
+          </div>
+          <div class="field"><label>Letra</label><input id="ed-grupo-letra" type="text" value="${row.letra_op||''}" disabled style="opacity:.6"></div>
+        </div>
+      </div>
+      
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">// PARTICIPANTES (${grupo.length})</div>
+    `;
+    
+    grupo.forEach((leg, i) => {
+      const opColor = leg.operacion === 'COMPRA' ? 'var(--compra)' : 'var(--venta)';
+      fieldsHtml += `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 12px;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="background:${opColor};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:var(--mono)">${leg.operacion}</span>
+            <span style="font-size:10px;color:var(--text2);font-family:var(--mono)">#${leg.id}</span>
+            <span style="margin-left:auto;font-size:10px;color:var(--text2)">${leg.email_estado === 'enviado' ? '✅' : leg.email_estado === 'fallo' ? '❌' : '🕓'}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:6px">
+            <div class="field"><label>Cliente</label><input data-leg-idx="${i}" data-field="cliente" type="text" value="${(leg.cliente||'').replace(/"/g,'&quot;')}"></div>
+            <div class="field"><label>RUT</label><input data-leg-idx="${i}" data-field="rut" type="text" value="${leg.rut||''}"></div>
+            <div class="field"><label>Cta</label><input data-leg-idx="${i}" data-field="cta" type="text" value="${leg.cta||''}"></div>
+            <div class="field"><label>Cantidad</label><input data-leg-idx="${i}" data-field="cantidad" type="number" value="${leg.cantidad||''}"></div>
+          </div>
+        </div>
+      `;
+    });
+  } else if (isGrupo && !isOrden) {
+    // Agrupado para aportes (raro pero soportado)
+    fieldsHtml = `<div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:8px">// ${grupo.length} APORTES DEL MISMO GRUPO</div>`;
+    grupo.forEach((leg, i) => {
+      fieldsHtml += `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 12px;margin-bottom:8px">
+          <div style="font-size:10px;color:var(--text2);font-family:var(--mono);margin-bottom:6px">#${leg.id} · ${leg.instruccion||'Aporte'}</div>
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:6px;margin-bottom:6px">
+            <div class="field"><label>Cliente</label><input data-leg-idx="${i}" data-field="cliente" type="text" value="${(leg.cliente||'').replace(/"/g,'&quot;')}"></div>
+            <div class="field"><label>RUT</label><input data-leg-idx="${i}" data-field="rut" type="text" value="${leg.rut||''}"></div>
+            <div class="field"><label>Cta</label><input data-leg-idx="${i}" data-field="cta" type="text" value="${leg.cta||''}"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:6px">
+            <div class="field"><label>Fondo</label><input data-leg-idx="${i}" data-field="fondo_mutuo" type="text" value="${(leg.fondo_mutuo||'').replace(/"/g,'&quot;')}"></div>
+            <div class="field"><label>Serie</label><input data-leg-idx="${i}" data-field="serie" type="text" value="${leg.serie||''}"></div>
+            <div class="field"><label>Monto</label><input data-leg-idx="${i}" data-field="monto" type="number" value="${leg.monto||''}"></div>
+            <div class="field"><label>Forma pago</label>
+              <select data-leg-idx="${i}" data-field="forma_pago">
+                <option value=""${!leg.forma_pago?' selected':''}>—</option>
+                <option${leg.forma_pago==='Cheque'?' selected':''}>Cheque</option>
+                <option${leg.forma_pago==='Transferencia bancaria'?' selected':''}>Transferencia bancaria</option>
+                <option${leg.forma_pago==='Cargo en cuenta'?' selected':''}>Cargo en cuenta</option>
+                <option${leg.forma_pago==='Vale vista'?' selected':''}>Vale vista</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+  } else if (isOrden) {
+    // ─── Operación individual ───
     fieldsHtml = `
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
         <div class="field"><label>Operación</label>
@@ -2867,11 +2985,11 @@ function renderEditorModal() {
             <option${row.moneda==='UF'?' selected':''}>UF</option>
           </select>
         </div>
-        <div class="field"><label>Comisión %</label><input id="ed-comision" type="number" step="0.01" value="${row.comision||''}"></div>
+        <div class="field"><label>Letra</label><input type="text" value="${row.letra_op||''}" disabled style="opacity:.6"></div>
       </div>
     `;
   } else {
-    // Aporte/Rescate
+    // Aporte individual
     fieldsHtml = `
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
         <div class="field"><label>Instrucción</label>
@@ -2898,6 +3016,7 @@ function renderEditorModal() {
             <option${row.forma_pago==='Vale vista'?' selected':''}>Vale vista</option>
           </select>
         </div>
+        <div class="field"><label>Letra</label><input type="text" value="${row.letra_op||''}" disabled style="opacity:.6"></div>
       </div>
     `;
   }
@@ -2905,11 +3024,11 @@ function renderEditorModal() {
   const html = `
     <div id="editor-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px"
          onclick="if(event.target===this)cerrarEditorModal()">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:680px;width:100%;max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.6)">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:780px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.6)">
         <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px">
           <div>
-            <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em">// EDITAR ${isOrden?'ORDEN':'APORTE'}</div>
-            <div style="font-size:14px;color:var(--text);margin-top:3px">ID #${row.id} · <span style="color:${estadoColor};font-weight:700">${estadoLabel}</span></div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em">// EDITAR ${tipoLabel}</div>
+            <div style="font-size:14px;color:var(--text);margin-top:3px"><strong>${tituloId}</strong> · <span style="color:${estadoColor};font-weight:700">${estadoLabel}</span></div>
           </div>
           <button onclick="cerrarEditorModal()" style="background:transparent;border:1px solid var(--border);color:var(--text2);width:28px;height:28px;border-radius:6px;font-size:14px;cursor:pointer">✕</button>
         </div>
@@ -2919,11 +3038,11 @@ function renderEditorModal() {
         </div>
         
         <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;background:var(--surface2)">
-          <button onclick="eliminarDesdeEditor()" style="background:transparent;border:1px solid var(--venta);color:var(--venta);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:600">🗑 Eliminar</button>
+          <button onclick="eliminarDesdeEditor()" style="background:transparent;border:1px solid var(--venta);color:var(--venta);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:600">🗑 Eliminar ${isGrupo?'grupo':''}</button>
           <div style="display:flex;gap:8px">
             <button onclick="cerrarEditorModal()" style="background:transparent;border:1px solid var(--border);color:var(--text2);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:600">Cancelar</button>
             <button onclick="guardarCambiosEditor(false)" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:600">💾 Guardar</button>
-            <button onclick="guardarCambiosEditor(true)" style="background:var(--accent);border:1px solid var(--accent);color:var(--bg);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:700">${estado==='enviado'?'✉ Reenviar email':'💾 Guardar y ✉ enviar'}</button>
+            <button onclick="guardarCambiosEditor(true)" style="background:var(--accent);border:1px solid var(--accent);color:var(--bg);padding:7px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--mono);font-weight:700">${estadoConjunto==='enviado'?'✉ Reenviar':'💾 Guardar y ✉ enviar'}</button>
           </div>
         </div>
       </div>
@@ -2932,10 +3051,51 @@ function renderEditorModal() {
   document.body.insertAdjacentHTML('beforeend', html);
 }
 
+// Lee los inputs del editor. Devuelve:
+//   - Para individual: {updates: {...campos}}
+//   - Para grupo: {sharedUpdates: {nemo, corredora, ...}, legUpdates: [{id, ...}, {id, ...}]}
 function leerEditorFields() {
-  const {tabla} = EDITOR_CTX;
+  const {tabla, grupo} = EDITOR_CTX;
+  const isGrupo = grupo.length > 1;
+  
+  if (isGrupo && tabla === 'ordenes') {
+    // Campos compartidos del grupo
+    const sharedUpdates = {
+      nemo: document.getElementById('ed-grupo-nemo')?.value.trim().toUpperCase() || '',
+      corredora: document.getElementById('ed-grupo-corredora')?.value.trim().toUpperCase() || '',
+      condicion: document.getElementById('ed-grupo-condicion')?.value || '',
+      precio: parseFloat(document.getElementById('ed-grupo-precio')?.value) || null,
+      moneda: document.getElementById('ed-grupo-moneda')?.value || 'CLP',
+    };
+    // Por leg: solo cliente/rut/cta/cantidad
+    const legUpdates = [];
+    document.querySelectorAll('#editor-modal input[data-leg-idx]').forEach(inp => {
+      const idx = parseInt(inp.dataset.legIdx);
+      const field = inp.dataset.field;
+      if (!legUpdates[idx]) legUpdates[idx] = {id: grupo[idx].id};
+      let v = inp.value.trim();
+      if (field === 'cantidad' || field === 'monto') v = parseFloat(v) || null;
+      legUpdates[idx][field] = v;
+    });
+    return {isGrupo: true, sharedUpdates, legUpdates};
+  }
+  
+  if (isGrupo && tabla === 'aportes') {
+    const legUpdates = [];
+    document.querySelectorAll('#editor-modal input[data-leg-idx], #editor-modal select[data-leg-idx]').forEach(inp => {
+      const idx = parseInt(inp.dataset.legIdx);
+      const field = inp.dataset.field;
+      if (!legUpdates[idx]) legUpdates[idx] = {id: grupo[idx].id};
+      let v = inp.value.trim();
+      if (field === 'monto') v = parseFloat(v) || null;
+      legUpdates[idx][field] = v;
+    });
+    return {isGrupo: true, sharedUpdates: {}, legUpdates};
+  }
+  
+  // Individual
   if (tabla === 'ordenes') {
-    return {
+    return {isGrupo: false, updates: {
       operacion: document.getElementById('ed-operacion').value,
       nemo: document.getElementById('ed-nemo').value.trim().toUpperCase(),
       corredora: document.getElementById('ed-corredora').value.trim().toUpperCase(),
@@ -2946,71 +3106,137 @@ function leerEditorFields() {
       precio: parseFloat(document.getElementById('ed-precio').value) || null,
       condicion: document.getElementById('ed-condicion').value,
       moneda: document.getElementById('ed-moneda').value,
-      comision: parseFloat(document.getElementById('ed-comision').value) || null,
-    };
-  } else {
-    return {
-      instruccion: document.getElementById('ed-instruccion').value,
-      cliente: document.getElementById('ed-cliente').value.trim(),
-      rut: document.getElementById('ed-rut').value.trim(),
-      cta: document.getElementById('ed-cta').value.trim(),
-      corredora: document.getElementById('ed-corredora').value.trim().toUpperCase(),
-      fondo_mutuo: document.getElementById('ed-fondo').value.trim(),
-      serie: document.getElementById('ed-serie').value.trim().toUpperCase(),
-      monto: parseFloat(document.getElementById('ed-monto').value) || null,
-      forma_pago: document.getElementById('ed-forma-pago').value,
-    };
+    }};
   }
+  return {isGrupo: false, updates: {
+    instruccion: document.getElementById('ed-instruccion').value,
+    cliente: document.getElementById('ed-cliente').value.trim(),
+    rut: document.getElementById('ed-rut').value.trim(),
+    cta: document.getElementById('ed-cta').value.trim(),
+    corredora: document.getElementById('ed-corredora').value.trim().toUpperCase(),
+    fondo_mutuo: document.getElementById('ed-fondo').value.trim(),
+    serie: document.getElementById('ed-serie').value.trim().toUpperCase(),
+    monto: parseFloat(document.getElementById('ed-monto').value) || null,
+    forma_pago: document.getElementById('ed-forma-pago').value,
+  }};
 }
 
 async function guardarCambiosEditor(enviarEmail) {
   if (!EDITOR_CTX) return;
-  const {tabla, id} = EDITOR_CTX;
-  const updates = leerEditorFields();
+  const {tabla, id, grupo} = EDITOR_CTX;
+  const fields = leerEditorFields();
   
-  // Validación mínima
-  if (!updates.rut) { alert('Falta RUT'); return; }
-  if (!updates.cliente) { alert('Falta cliente'); return; }
-  if (tabla === 'ordenes' && !updates.nemo) { alert('Falta nemo'); return; }
-  if (tabla === 'aportes' && !updates.fondo_mutuo) { alert('Falta fondo'); return; }
-  
-  // Update en BD
-  const {data, error} = await SB.from(tabla).update(updates).eq('id', id).select().single();
-  if (error) { alert('Error guardando: ' + error.message); return; }
-  
-  if (enviarEmail) {
-    // Enviar email
-    if (!outlookAccount) { alert('Conectá Outlook primero (Configuración → Outlook)'); return; }
-    const corrKey = (data.corredora||'').toUpperCase();
-    if (!corredorasConfig[corrKey]) { alert(`No hay email configurado para la corredora ${data.corredora}`); return; }
+  if (fields.isGrupo) {
+    // ─── Guardar grupo (cruce o bloque) ───
+    const {sharedUpdates, legUpdates} = fields;
     
-    const tipo = tabla === 'ordenes' ? 'orden' : 'aporte';
-    const r = await enviarEmailOutlook(data, tipo).catch(e => ({ok:false, msg:e.message}));
-    if (r.ok) {
-      await SB.from(tabla).update({email_enviado:true, email_estado:'enviado'}).eq('id', id);
-      botMsg(`✅ Cambios guardados y email enviado a ${data.corredora}`);
-    } else {
-      await SB.from(tabla).update({email_estado:'fallo'}).eq('id', id);
-      botMsg(`⚠ Cambios guardados pero el email falló: ${r.msg}`);
+    // Aplicar shared a todas las legs
+    if (Object.keys(sharedUpdates).length) {
+      const ids = grupo.map(r => r.id);
+      const {error} = await SB.from(tabla).update(sharedUpdates).in('id', ids);
+      if (error) { alert('Error guardando shared: ' + error.message); return; }
     }
+    
+    // Aplicar updates por leg individual
+    for (const u of legUpdates) {
+      if (!u || !u.id) continue;
+      const legUpdate = {...u};
+      delete legUpdate.id;
+      if (Object.keys(legUpdate).length) {
+        const {error} = await SB.from(tabla).update(legUpdate).eq('id', u.id);
+        if (error) { console.error('Error leg', u.id, error); }
+      }
+    }
+    
+    if (enviarEmail) {
+      if (!outlookAccount) { alert('Conectá Outlook primero (Configuración → Outlook)'); return; }
+      // Recargar grupo desde BD con los cambios aplicados
+      const {data: gruposFresh} = await SB.from(tabla).select('*').in('id', grupo.map(r=>r.id));
+      const corrKey = (gruposFresh?.[0]?.corredora||'').toUpperCase();
+      if (!corredorasConfig[corrKey]) { alert(`No hay email configurado para la corredora ${gruposFresh?.[0]?.corredora}`); return; }
+      
+      // Si es cruce/bloque de órdenes, usar el sender consolidado
+      let r;
+      if (tabla === 'ordenes') {
+        r = await enviarEmailCruce(gruposFresh, gruposFresh[0].corredora).catch(e => ({ok:false, msg:e.message}));
+      } else {
+        // Múltiples aportes: enviar uno por uno
+        let allOk = true; let errs = [];
+        for (const a of gruposFresh) {
+          const rA = await enviarEmailOutlook(a, 'aporte').catch(e => ({ok:false, msg:e.message}));
+          if (!rA.ok) { allOk = false; errs.push(rA.msg||'?'); }
+        }
+        r = {ok: allOk, msg: errs.join(', ')};
+      }
+      
+      if (r.ok) {
+        for (const leg of grupo) await SB.from(tabla).update({email_enviado:true, email_estado:'enviado'}).eq('id', leg.id);
+        botMsg(`✅ Cambios guardados y email del grupo enviado (${grupo.length} legs)`);
+      } else {
+        for (const leg of grupo) await SB.from(tabla).update({email_estado:'fallo'}).eq('id', leg.id);
+        botMsg(`⚠ Cambios guardados pero el email falló: ${r.msg}`);
+      }
+    } else {
+      botMsg(`✅ Cambios guardados en grupo (${grupo.length} legs, sin enviar email)`);
+    }
+    
   } else {
-    botMsg(`✅ Cambios guardados (sin enviar email)`);
+    // ─── Individual (código original) ───
+    const updates = fields.updates;
+    
+    if (!updates.rut) { alert('Falta RUT'); return; }
+    if (!updates.cliente) { alert('Falta cliente'); return; }
+    if (tabla === 'ordenes' && !updates.nemo) { alert('Falta nemo'); return; }
+    if (tabla === 'aportes' && !updates.fondo_mutuo) { alert('Falta fondo'); return; }
+    
+    const {data, error} = await SB.from(tabla).update(updates).eq('id', id).select().single();
+    if (error) { alert('Error guardando: ' + error.message); return; }
+    
+    if (enviarEmail) {
+      if (!outlookAccount) { alert('Conectá Outlook primero (Configuración → Outlook)'); return; }
+      const corrKey = (data.corredora||'').toUpperCase();
+      if (!corredorasConfig[corrKey]) { alert(`No hay email configurado para la corredora ${data.corredora}`); return; }
+      
+      const tipo = tabla === 'ordenes' ? 'orden' : 'aporte';
+      const r = await enviarEmailOutlook(data, tipo).catch(e => ({ok:false, msg:e.message}));
+      if (r.ok) {
+        await SB.from(tabla).update({email_enviado:true, email_estado:'enviado'}).eq('id', id);
+        botMsg(`✅ Cambios guardados y email enviado a ${data.corredora}`);
+      } else {
+        await SB.from(tabla).update({email_estado:'fallo'}).eq('id', id);
+        botMsg(`⚠ Cambios guardados pero el email falló: ${r.msg}`);
+      }
+    } else {
+      botMsg(`✅ Cambios guardados (sin enviar email)`);
+    }
   }
   
   cerrarEditorModal();
-  // Refrescar tabla
   if (tabla === 'ordenes') await cargarOrdenes();
   else await cargarAportes();
 }
 
 async function eliminarDesdeEditor() {
   if (!EDITOR_CTX) return;
-  if (!confirm('¿Eliminar esta operación? No se puede deshacer.')) return;
-  const {tabla, id} = EDITOR_CTX;
-  const {error} = await SB.from(tabla).delete().eq('id', id);
-  if (error) { alert('Error eliminando: ' + error.message); return; }
+  const {tabla, id, grupo} = EDITOR_CTX;
+  const isGrupo = grupo.length > 1;
+  const msg = isGrupo 
+    ? `¿Eliminar las ${grupo.length} operaciones de este grupo? No se puede deshacer.`
+    : '¿Eliminar esta operación? No se puede deshacer.';
+  if (!confirm(msg)) return;
+  
+  if (isGrupo) {
+    const ids = grupo.map(r => r.id);
+    const {error} = await SB.from(tabla).delete().in('id', ids);
+    if (error) { alert('Error eliminando: ' + error.message); return; }
+    botMsg(`🗑 Grupo eliminado (${grupo.length} operaciones)`);
+  } else {
+    const {error} = await SB.from(tabla).delete().eq('id', id);
+    if (error) { alert('Error eliminando: ' + error.message); return; }
+    botMsg(`🗑 Operación #${id} eliminada`);
+  }
+  
   cerrarEditorModal();
-  botMsg(`🗑 Operación #${id} eliminada`);
   if (tabla === 'ordenes') await cargarOrdenes();
   else await cargarAportes();
 }
@@ -3126,9 +3352,10 @@ function renderOrdenes(data) {
   if(!visible.length){tb.innerHTML=`<tr><td colspan="13" class="empty">${data.length?'Sin órdenes con este filtro':'Sin órdenes hoy'}</td></tr>`;return;}
   tb.innerHTML=visible.map(o=>{
     const montoTotal = (o.precio && o.cantidad) ? Math.round(o.precio * o.cantidad) : null;
-    return `<tr>
+    const letraTag = o.letra_op ? `<span style="font-size:9px;color:var(--text2);font-family:var(--mono);margin-left:4px;opacity:.7">${o.letra_op}</span>` : '';
+    return `<tr ondblclick="abrirEditorOperacion('ordenes',${o.id})" style="cursor:pointer" title="Doble click para editar">
     <td><span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
-    <td class="mono" style="font-weight:600">${o.nemo||'—'}</td>
+    <td class="mono" style="font-weight:600">${o.nemo||'—'}${letraTag}</td>
     <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis">${o.cliente}</td>
     <td class="mono">${o.rut}</td>
     <td class="mono">${o.cta||'—'}</td>
@@ -3139,8 +3366,8 @@ function renderOrdenes(data) {
     <td>${o.condicion||'—'}</td>
     <td class="mono">${o.moneda||'CLP'}</td>
     <td><span class="executor-tag">${o.ejecutado_por||'—'}</span></td>
-    <td style="text-align:center">${emailBadgeHtml(o,'ordenes')}</td>
-    <td><button class="btn sm danger" onclick="eliminar('ordenes',${o.id},'tb-o')">✕</button></td>
+    <td style="text-align:center" onclick="event.stopPropagation()">${emailBadgeHtml(o,'ordenes')}</td>
+    <td onclick="event.stopPropagation()"><button class="btn sm danger" onclick="eliminar('ordenes',${o.id},'tb-o')">✕</button></td>
   </tr>`;}).join('');
 }
 function renderAportes(data) {
@@ -3157,15 +3384,15 @@ function renderAportes(data) {
   
   const tb=document.getElementById('tb-a');
   if(!visible.length){tb.innerHTML=`<tr><td colspan="11" class="empty">${data.length?'Sin aportes con este filtro':'Sin registros hoy'}</td></tr>`;return;}
-  tb.innerHTML=visible.map(a=>`<tr>
+  tb.innerHTML=visible.map(a=>`<tr ondblclick="abrirEditorOperacion('aportes',${a.id})" style="cursor:pointer" title="Doble click para editar">
     <td><span class="pill inst">${a.instruccion||'—'}</span></td>
     <td>${a.cliente}</td><td class="mono">${a.rut}</td><td class="mono">${a.cta||'—'}</td>
-    <td>${a.fondo_mutuo||'—'}</td><td class="mono">${a.serie||'—'}</td>
+    <td>${a.fondo_mutuo||'—'}${a.letra_op?`<span style="font-size:9px;color:var(--text2);font-family:var(--mono);margin-left:4px;opacity:.7">${a.letra_op}</span>`:''}</td><td class="mono">${a.serie||'—'}</td>
     <td class="right mono">${a.monto?'$'+Number(a.monto).toLocaleString('es-CL'):'—'}</td>
     <td style="font-size:11px">${a.forma_pago||'—'}</td>
     <td><span class="executor-tag">${a.ejecutado_por||'—'}</span></td>
-    <td style="text-align:center">${emailBadgeHtml(a,'aportes')}</td>
-    <td><button class="btn sm danger" onclick="eliminar('aportes',${a.id},'tb-a')">✕</button></td>
+    <td style="text-align:center" onclick="event.stopPropagation()">${emailBadgeHtml(a,'aportes')}</td>
+    <td onclick="event.stopPropagation()"><button class="btn sm danger" onclick="eliminar('aportes',${a.id},'tb-a')">✕</button></td>
   </tr>`).join('');
 }
 function renderSaldos(data) {
@@ -5992,6 +6219,10 @@ async function confirmarPendingOrder() {
     let guardadas = 0, fallidas = 0;
     const filasGuardadas = []; // para email consolidado por corredora
     const aportesGuardados = [];
+    
+    // Asignar UNA letra compartida para todo el bloque (queda agrupado en la BD)
+    const letraBloque = await siguienteLetraDelDia(todayStr(), 'ordenes');
+    
     for (const o of p.ordenes) {
       try {
         if (o.type === 'orden') {
@@ -6003,7 +6234,8 @@ async function confirmarPendingOrder() {
               fecha:todayStr(), operacion:o.op, corredora:o.corredora||'',
               cta:cli.cta||'', moneda:o.moneda||'CLP', rut:cli.rut||'', cliente:cli.nombre||'',
               cantidad:o.cantidad||null, nemo:o.nemo||'', condicion:o.condicion||'',
-              precio:o.precio||null, comision:null, email_enviado:false, ejecutado_por:executor
+              precio:o.precio||null, comision:null, email_enviado:false, ejecutado_por:executor,
+              letra_op: letraBloque
             };
             const {data, error} = await SB.from('ordenes').insert(row).select().single();
             if (!error) {
@@ -6102,12 +6334,13 @@ async function confirmarPendingOrder() {
   if (p.type === 'bloque') {
     // bloque handled above
   } else if (p.type === 'orden') {
+    const letraOrden = await siguienteLetraDelDia(todayStr(), 'ordenes');
     const row = {
       fecha:todayStr(), operacion:p.op, corredora:p.corredora||'',
       cta:p.cta||'', moneda:p.moneda||'CLP', rut:p.rut, cliente:p.cliente,
       cantidad:p.cantidad||null, nemo:p.nemo, condicion:p.condicion||'',
       precio:p.precio||null, comision:null, email_enviado:false,
-      ejecutado_por:executor
+      ejecutado_por:executor, letra_op: letraOrden
     };
     
     const corrEmail = corredorasConfig[(p.corredora||'').toUpperCase()];
@@ -6273,10 +6506,13 @@ async function confirmarPendingOrder() {
       moneda: 'CLP', email_enviado: false, ejecutado_por: executor
     };
 
-    // Insert all legs
+    // Asignar letra_op compartida ANTES del insert para que la encargada pueda agrupar
+    const letraCruce = await siguienteLetraDelDia(todayStr(), 'ordenes');
+    
+    // Insert all legs (con letra_op compartida)
     const inserts = [
-      ...p.vendedores.map(pt => ({...baseRow, operacion:'VENTA',  cliente:pt.nombre, rut:pt.rut, cta:pt.cta||'', cantidad:pt.cantidad||null})),
-      ...p.compradores.map(pt => ({...baseRow, operacion:'COMPRA', cliente:pt.nombre, rut:pt.rut, cta:pt.cta||'', cantidad:pt.cantidad||null})),
+      ...p.vendedores.map(pt => ({...baseRow, letra_op:letraCruce, operacion:'VENTA',  cliente:pt.nombre, rut:pt.rut, cta:pt.cta||'', cantidad:pt.cantidad||null})),
+      ...p.compradores.map(pt => ({...baseRow, letra_op:letraCruce, operacion:'COMPRA', cliente:pt.nombre, rut:pt.rut, cta:pt.cta||'', cantidad:pt.cantidad||null})),
     ];
 
     const { data: rows, error: eIns } = await SB.from('ordenes').insert(inserts).select();
@@ -6312,12 +6548,13 @@ async function confirmarPendingOrder() {
     else showSection('ordenes', document.querySelector('.nav-item'));
 
   } else if (p.type === 'aporte') {
+    const letraAporte = await siguienteLetraDelDia(todayStr(), 'aportes');
     const row = {
       fecha:todayStr(), rut:p.rut, cliente:p.cliente, cta:p.cta||'',
       instruccion:p.instruccion, monto:p.monto||null,
       fondo_mutuo:p.fondo||'', serie:p.serie||'',
       forma_pago:p.formaPago||'', email_enviado:false,
-      ejecutado_por:executor
+      ejecutado_por:executor, letra_op: letraAporte
     };
     const {data,error} = await SB.from('aportes').insert(row).select().single();
     if (error) { botMsg(`❌ Error: ${error.message}`); return; }
@@ -6908,7 +7145,7 @@ function renderConfigUI() {
   const cbAuto = document.getElementById('cfg-email-auto');
   if (cbAuto) {
     cbAuto.checked = CURRENT_USER?.email_automatico === true;
-    updateEmailAutoLabel(cbAuto.checked);
+    updateEmailAutoUI(cbAuto.checked);
   }
   
   renderCorredorasUI();
@@ -6917,35 +7154,66 @@ function renderConfigUI() {
   renderFondosFrecuentes();
 }
 
-function updateEmailAutoLabel(on) {
+// (Eliminada updateEmailAutoLabel — usar updateEmailAutoUI ahora)
+
+// Actualiza UI (botón del chat + switch de config) sin tocar BD
+function updateEmailAutoUI(on) {
+  // Switch de config
+  const cb = document.getElementById('cfg-email-auto');
+  if (cb) cb.checked = on;
   const status = document.getElementById('cfg-email-auto-status');
   if (status) {
     status.textContent = on ? 'ACTIVADO' : 'DESACTIVADO';
     status.style.color = on ? 'var(--accent)' : 'var(--warn)';
   }
+  // Botón del chat
+  const dot = document.getElementById('chat-email-auto-dot');
+  const txt = document.getElementById('chat-email-auto-text');
+  const btn = document.getElementById('chat-email-auto-btn');
+  if (dot && txt && btn) {
+    if (on) {
+      dot.style.background = 'var(--accent)';
+      txt.textContent = 'Email automático';
+      btn.style.color = 'var(--accent)';
+      btn.style.borderColor = 'var(--accent)';
+      btn.title = 'Email automático ACTIVADO · click para desactivar';
+    } else {
+      dot.style.background = 'var(--warn)';
+      txt.textContent = 'Email manual';
+      btn.style.color = 'var(--text2)';
+      btn.style.borderColor = 'var(--border)';
+      btn.title = 'Email automático DESACTIVADO · click para activar';
+    }
+  }
+}
+
+// Llamado desde botón del chat (sin args, toggle inverso)
+async function toggleEmailAutomaticoQuick() {
+  await toggleEmailAutomatico(!CURRENT_USER?.email_automatico);
 }
 
 async function toggleEmailAutomatico(nuevoEstado) {
   const msg = document.getElementById('cfg-email-auto-msg');
   if (!CURRENT_USER?.bk_id) {
-    msg.textContent = '⚠ No se pudo identificar tu perfil de banquero';
+    if (msg) msg.textContent = '⚠ No se pudo identificar tu perfil de banquero';
     return;
   }
   const {error} = await SB.from('banqueros')
     .update({email_automatico: nuevoEstado})
     .eq('id', CURRENT_USER.bk_id);
   if (error) {
-    msg.textContent = '❌ Error: ' + error.message;
-    // Revertir checkbox
-    document.getElementById('cfg-email-auto').checked = CURRENT_USER.email_automatico;
+    if (msg) msg.textContent = '❌ Error: ' + error.message;
+    updateEmailAutoUI(CURRENT_USER.email_automatico); // revertir
     return;
   }
   CURRENT_USER.email_automatico = nuevoEstado;
-  updateEmailAutoLabel(nuevoEstado);
-  msg.textContent = nuevoEstado 
-    ? '✓ Email automático activado: los emails se envían al confirmar'
-    : '✓ Email automático desactivado: las operaciones quedan pendientes';
-  setTimeout(() => { msg.textContent = ''; }, 4000);
+  updateEmailAutoUI(nuevoEstado);
+  if (msg) {
+    msg.textContent = nuevoEstado 
+      ? '✓ Email automático activado: los emails se envían al confirmar'
+      : '✓ Email automático desactivado: las operaciones quedan pendientes';
+    setTimeout(() => { msg.textContent = ''; }, 4000);
+  }
 }
 function renderCorredorasUI() {
   const entries = Object.entries(corredorasConfig);
