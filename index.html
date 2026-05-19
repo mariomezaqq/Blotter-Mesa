@@ -277,6 +277,8 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:13
 .btn.danger:hover{background:var(--venta-dim)}
 .btn.ok{color:var(--compra);border-color:var(--accent2)}
 .btn.ok:hover{background:var(--compra-dim)}
+.res-preset.active{background:var(--accent);color:#0d1a0f;border-color:var(--accent);font-weight:600}
+.res-preset.active:hover{opacity:.85;background:var(--accent)}
 .email-toggle{
   display:flex;align-items:center;gap:6px;
   padding:5px 10px;border-radius:var(--r);
@@ -1082,95 +1084,181 @@ tr:hover td{background:var(--surface2)}
 
         <!-- ── RESÚMENES ── -->
         <div id="sec-resumenes" class="section">
-          <!-- Date selector -->
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
-            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text2);font-family:var(--mono)">Fecha:</div>
-            <input type="date" id="res-fecha"
-              style="font-family:var(--mono);font-size:12px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none;cursor:pointer"
-              onchange="cargarResumenes()">
-            <button class="btn sm" onclick="setResumenFecha(0)">Hoy</button>
-            <button class="btn sm" onclick="setResumenFecha(-1)">Ayer</button>
-            <button class="btn sm" onclick="setResumenFecha(-7)">Hace 7 días</button>
-            <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="res-fecha-label"></span>
+          <!-- ── Selector de rango ── -->
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <button class="btn sm res-preset active" data-preset="hoy" onclick="setResumenPreset('hoy')">Hoy</button>
+            <button class="btn sm res-preset" data-preset="semana" onclick="setResumenPreset('semana')">Esta semana</button>
+            <button class="btn sm res-preset" data-preset="mes" onclick="setResumenPreset('mes')">Este mes</button>
+            <button class="btn sm res-preset" data-preset="año" onclick="setResumenPreset('año')">Este año</button>
+            <span style="color:var(--text3);font-size:11px">|</span>
+            <span style="font-size:10px;color:var(--text2);font-family:var(--mono);text-transform:uppercase;letter-spacing:.1em">Rango:</span>
+            <input type="date" id="res-fecha-desde"
+              style="font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none;cursor:pointer"
+              onchange="setResumenCustom()" title="Desde">
+            <span style="color:var(--text3);font-size:11px">→</span>
+            <input type="date" id="res-fecha-hasta"
+              style="font-family:var(--mono);font-size:12px;padding:5px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);outline:none;cursor:pointer"
+              onchange="setResumenCustom()" title="Hasta">
+            <span style="font-size:10px;color:var(--text2);font-family:var(--mono);margin-left:auto" id="res-fecha-label"></span>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-            <div class="metric" style="padding:14px 16px">
-              <div class="metric-label">Monto total</div>
-              <div class="metric-val mono" id="res-monto-total" style="font-size:16px">$0</div>
-              <div class="metric-sub">CLP · todas las órdenes</div>
+
+          <!-- ── KPIs ── -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+            <div class="metric" style="padding:12px 14px">
+              <div class="metric-label">Compras / Ventas</div>
+              <div class="metric-val mono" id="res-ord-monto" style="font-size:15px">$0</div>
+              <div class="metric-sub" id="res-ord-count">0 órdenes</div>
             </div>
-            <div class="metric" style="padding:14px 16px">
-              <div class="metric-label">Órdenes</div>
-              <div class="metric-val mono" id="res-ordenes-total">0</div>
-              <div class="metric-sub" id="res-banqueros-activos">0 banqueros operando</div>
+            <div class="metric" style="padding:12px 14px">
+              <div class="metric-label">Aportes</div>
+              <div class="metric-val mono" id="res-ap-monto" style="font-size:15px;color:var(--compra)">$0</div>
+              <div class="metric-sub" id="res-ap-count">0 ops</div>
+            </div>
+            <div class="metric" style="padding:12px 14px">
+              <div class="metric-label">Rescates</div>
+              <div class="metric-val mono" id="res-rs-monto" style="font-size:15px;color:var(--venta)">$0</div>
+              <div class="metric-sub" id="res-rs-count">0 ops</div>
+            </div>
+            <div class="metric" style="padding:12px 14px">
+              <div class="metric-label">Neto FFMM</div>
+              <div class="metric-val mono" id="res-neto-monto" style="font-size:15px">$0</div>
+              <div class="metric-sub">Aportes − Rescates</div>
             </div>
           </div>
 
-          <!-- Historial del banquero actual -->
-          <div class="table-wrap" style="margin-bottom:12px">
-            <div class="table-toolbar" style="justify-content:space-between">
-              <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--accent)">
-                ⏱ Mis últimas operaciones
-              </span>
-              <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="res-mis-count"></span>
-            </div>
-            <div class="table-scroll">
-              <table>
-                <thead><tr><th>Hora</th><th>Op.</th><th>Nemo</th><th>Cliente</th><th class="right">Cantidad</th><th class="right">Precio</th><th class="right">Total</th><th>Cta</th></tr></thead>
-                <tbody id="tb-mis-ordenes"><tr><td colspan="8" class="empty">Sin operaciones hoy</td></tr></tbody>
-              </table>
-            </div>
+          <!-- ── Tabs Compras/Ventas vs Aportes/Rescates ── -->
+          <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:14px;gap:0">
+            <button class="res-tab-btn active" data-tab="ordenes" onclick="setResumenTab('ordenes')"
+              style="padding:9px 16px;background:transparent;color:var(--accent);border:none;border-bottom:2px solid var(--accent);font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:.05em">
+              📈 Compras / Ventas
+            </button>
+            <button class="res-tab-btn" data-tab="aportes" onclick="setResumenTab('aportes')"
+              style="padding:9px 16px;background:transparent;color:var(--text2);border:none;border-bottom:2px solid transparent;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:.05em">
+              💰 Aportes / Rescates
+            </button>
           </div>
 
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <!-- Por instrumento -->
-            <div class="table-wrap">
-              <div class="table-toolbar">
-                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">🔥 Top nemos del día</span>
+          <!-- ── Bloque ÓRDENES ── -->
+          <div id="res-block-ordenes">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">🔥 Top nemos</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Nemo</th><th class="right">Órdenes</th><th class="right">Monto total</th></tr></thead>
+                    <tbody id="tb-top-nemos"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">🏦 Top corredoras</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Corredora</th><th class="right">Órdenes</th><th class="right">Monto</th></tr></thead>
+                    <tbody id="tb-top-corredoras"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👤 Top clientes</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Cliente</th><th class="right">Órdenes</th><th class="right">Monto total</th></tr></thead>
+                    <tbody id="tb-top-clientes"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👨‍💼 Top banqueros</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Banquero</th><th class="right">Órdenes</th><th class="right">Monto</th></tr></thead>
+                    <tbody id="tb-top-banqueros"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <!-- Historial de mis operaciones (compras/ventas) -->
+            <div class="table-wrap" style="margin-top:12px">
+              <div class="table-toolbar" style="justify-content:space-between">
+                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--accent)">⏱ Mis órdenes (compras/ventas)</span>
+                <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="res-mis-count"></span>
               </div>
               <div class="table-scroll">
                 <table>
-                  <thead><tr><th>Nemo</th><th class="right">Órdenes</th><th class="right">Monto total</th><th>Última op.</th></tr></thead>
-                  <tbody id="tb-top-nemos"><tr><td colspan="4" class="empty">Sin datos</td></tr></tbody>
+                  <thead><tr><th>Fecha</th><th>Op.</th><th>Nemo</th><th>Cliente</th><th class="right">Cantidad</th><th class="right">Precio</th><th class="right">Total</th><th>Cta</th></tr></thead>
+                  <tbody id="tb-mis-ordenes"><tr><td colspan="8" class="empty">Sin operaciones</td></tr></tbody>
                 </table>
               </div>
             </div>
+          </div>
 
-            <!-- Por cliente -->
-            <div class="table-wrap">
-              <div class="table-toolbar">
-                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👤 Top clientes del día</span>
+          <!-- ── Bloque APORTES/RESCATES ── -->
+          <div id="res-block-aportes" style="display:none">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">🏆 Top fondos</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Fondo</th><th class="right">Ops</th><th class="right">Monto</th></tr></thead>
+                    <tbody id="tb-top-fondos"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
               </div>
-              <div class="table-scroll">
-                <table>
-                  <thead><tr><th>Cliente</th><th class="right">Órdenes</th><th class="right">Monto total</th></tr></thead>
-                  <tbody id="tb-top-clientes"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
-                </table>
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👤 Top clientes (FFMM)</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Cliente</th><th class="right">Ops</th><th class="right">Monto neto</th></tr></thead>
+                    <tbody id="tb-top-clientes-ap"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👨‍💼 Top banqueros (FFMM)</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Banquero</th><th class="right">Ops</th><th class="right">Monto</th></tr></thead>
+                    <tbody id="tb-top-banqueros-ap"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <div class="table-toolbar">
+                  <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">📋 Por instrucción</span>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Instrucción</th><th class="right">Ops</th><th class="right">Monto</th></tr></thead>
+                    <tbody id="tb-top-instrucciones"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  </table>
+                </div>
               </div>
             </div>
-
-            <!-- Por banquero -->
-            <div class="table-wrap">
-              <div class="table-toolbar">
-                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">👨‍💼 Actividad por banquero</span>
+            <!-- Historial de mis aportes/rescates -->
+            <div class="table-wrap" style="margin-top:12px">
+              <div class="table-toolbar" style="justify-content:space-between">
+                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--accent)">⏱ Mis aportes / rescates</span>
+                <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="res-mis-count-ap"></span>
               </div>
               <div class="table-scroll">
                 <table>
-                  <thead><tr><th>Banquero</th><th class="right">Órdenes</th><th class="right">Monto</th><th>Último</th></tr></thead>
-                  <tbody id="tb-top-banqueros"><tr><td colspan="4" class="empty">Sin datos</td></tr></tbody>
-                </table>
-              </div>
-            </div>
-
-            <!-- Por corredora -->
-            <div class="table-wrap">
-              <div class="table-toolbar">
-                <span style="font-size:11px;font-weight:600;font-family:var(--mono);color:var(--text2)">🏦 Por corredora</span>
-              </div>
-              <div class="table-scroll">
-                <table>
-                  <thead><tr><th>Corredora</th><th class="right">Órdenes</th><th class="right">Monto</th></tr></thead>
-                  <tbody id="tb-top-corredoras"><tr><td colspan="3" class="empty">Sin datos</td></tr></tbody>
+                  <thead><tr><th>Fecha</th><th>Inst.</th><th>Cliente</th><th>Fondo</th><th>Serie</th><th class="right">Monto</th><th>Forma Pago</th></tr></thead>
+                  <tbody id="tb-mis-aportes"><tr><td colspan="7" class="empty">Sin operaciones</td></tr></tbody>
                 </table>
               </div>
             </div>
@@ -1299,12 +1387,14 @@ tr:hover td{background:var(--surface2)}
           <div class="chat-status" id="chat-status-bar">Listo · escribí la orden en lenguaje natural</div>
         </div>
         <div style="display:flex;align-items:center;gap:10px">
-          <button id="chat-email-auto-btn" onclick="toggleEmailAutomaticoQuick()" 
-            style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);border-radius:6px;font-size:10px;font-family:var(--mono);font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:.05em;transition:all .15s"
+          <div id="chat-email-auto-switch" onclick="toggleEmailAutomaticoQuick()" 
+            style="display:flex;align-items:center;gap:8px;padding:5px 10px 5px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;cursor:pointer;user-select:none;transition:all .2s"
             title="Click para cambiar">
-            <span id="chat-email-auto-dot" style="width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block"></span>
-            <span id="chat-email-auto-text">Email manual</span>
-          </button>
+            <div id="chat-email-track" style="width:32px;height:18px;background:rgba(255,193,7,0.25);border-radius:10px;position:relative;transition:background .2s;flex-shrink:0">
+              <div id="chat-email-thumb" style="position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;background:var(--warn);transition:all .2s;box-shadow:0 1px 3px rgba(0,0,0,0.4)"></div>
+            </div>
+            <span id="chat-email-auto-text" style="font-size:10px;font-family:var(--mono);font-weight:700;color:var(--warn);text-transform:uppercase;letter-spacing:.05em">EMAIL OFF</span>
+          </div>
           <button class="chat-toggle-btn" onclick="setViewMode('form')" title="Ocultar chat">→</button>
         </div>
       </div>
@@ -3348,14 +3438,47 @@ function renderOrdenes(data) {
   // Aplicar filtro a los datos visibles
   const visible = aplicarFiltroEmail(data, FILTRO_EMAIL_ORD, 'ordenes');
   
+  // Detectar grupos: letras que aparecen más de una vez (cruces/bloques)
+  const conteoLetras = {};
+  for (const o of visible) {
+    if (o.letra_op) conteoLetras[o.letra_op] = (conteoLetras[o.letra_op]||0) + 1;
+  }
+  
   const tb=document.getElementById('tb-o');
   if(!visible.length){tb.innerHTML=`<tr><td colspan="13" class="empty">${data.length?'Sin órdenes con este filtro':'Sin órdenes hoy'}</td></tr>`;return;}
-  tb.innerHTML=visible.map(o=>{
+  
+  tb.innerHTML=visible.map((o, idx)=>{
     const montoTotal = (o.precio && o.cantidad) ? Math.round(o.precio * o.cantidad) : null;
-    const letraTag = o.letra_op ? `<span style="font-size:9px;color:var(--text2);font-family:var(--mono);margin-left:4px;opacity:.7">${o.letra_op}</span>` : '';
-    return `<tr ondblclick="abrirEditorOperacion('ordenes',${o.id})" style="cursor:pointer" title="Doble click para editar">
-    <td><span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
-    <td class="mono" style="font-weight:600">${o.nemo||'—'}${letraTag}</td>
+    const esGrupo = o.letra_op && conteoLetras[o.letra_op] > 1;
+    
+    // Si pertenece a un grupo, badge azul prominente; si es individual, badge sutil
+    let letraBadge = '';
+    if (o.letra_op) {
+      if (esGrupo) {
+        // Badge prominente con borde y color de grupo (verde acento)
+        letraBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;
+          background:rgba(0,229,150,0.15);color:var(--accent);border:1px solid var(--accent);
+          border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;font-family:var(--mono);
+          margin-right:6px;letter-spacing:.5px" title="Orden agrupada ${o.letra_op} · ${conteoLetras[o.letra_op]} legs">
+          ⛓ ${o.letra_op}
+        </span>`;
+      } else {
+        letraBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;
+          background:var(--surface2);color:var(--text2);
+          border-radius:10px;padding:1px 6px;font-size:9px;font-weight:600;font-family:var(--mono);
+          margin-right:6px;opacity:.7" title="Orden ${o.letra_op}">${o.letra_op}</span>`;
+      }
+    }
+    
+    // Borde lateral izquierdo verde si es grupo
+    const borderStyle = esGrupo ? 'box-shadow: inset 3px 0 0 var(--accent)' : '';
+    const tooltipTxt = esGrupo 
+      ? `Doble click para editar grupo (${conteoLetras[o.letra_op]} legs · orden ${o.letra_op})`
+      : 'Doble click para editar';
+    
+    return `<tr ondblclick="abrirEditorOperacion('ordenes',${o.id})" style="cursor:pointer;${borderStyle}" title="${tooltipTxt}">
+    <td style="white-space:nowrap">${letraBadge}<span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
+    <td class="mono" style="font-weight:600">${o.nemo||'—'}</td>
     <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis">${o.cliente}</td>
     <td class="mono">${o.rut}</td>
     <td class="mono">${o.cta||'—'}</td>
@@ -3382,18 +3505,47 @@ function renderAportes(data) {
   
   const visible = aplicarFiltroEmail(data, FILTRO_EMAIL_APO, 'aportes');
   
+  // Detectar grupos
+  const conteoLetrasA = {};
+  for (const a of visible) {
+    if (a.letra_op) conteoLetrasA[a.letra_op] = (conteoLetrasA[a.letra_op]||0) + 1;
+  }
+  
   const tb=document.getElementById('tb-a');
   if(!visible.length){tb.innerHTML=`<tr><td colspan="11" class="empty">${data.length?'Sin aportes con este filtro':'Sin registros hoy'}</td></tr>`;return;}
-  tb.innerHTML=visible.map(a=>`<tr ondblclick="abrirEditorOperacion('aportes',${a.id})" style="cursor:pointer" title="Doble click para editar">
-    <td><span class="pill inst">${a.instruccion||'—'}</span></td>
+  tb.innerHTML=visible.map(a=>{
+    const esGrupo = a.letra_op && conteoLetrasA[a.letra_op] > 1;
+    let letraBadge = '';
+    if (a.letra_op) {
+      if (esGrupo) {
+        letraBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;
+          background:rgba(0,229,150,0.15);color:var(--accent);border:1px solid var(--accent);
+          border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;font-family:var(--mono);
+          margin-right:6px;letter-spacing:.5px" title="Aportes agrupados ${a.letra_op} · ${conteoLetrasA[a.letra_op]} legs">
+          ⛓ ${a.letra_op}
+        </span>`;
+      } else {
+        letraBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;
+          background:var(--surface2);color:var(--text2);
+          border-radius:10px;padding:1px 6px;font-size:9px;font-weight:600;font-family:var(--mono);
+          margin-right:6px;opacity:.7" title="Aporte ${a.letra_op}">${a.letra_op}</span>`;
+      }
+    }
+    const borderStyle = esGrupo ? 'box-shadow: inset 3px 0 0 var(--accent)' : '';
+    const tooltipTxt = esGrupo 
+      ? `Doble click para editar grupo (${conteoLetrasA[a.letra_op]} legs · aporte ${a.letra_op})`
+      : 'Doble click para editar';
+    
+    return `<tr ondblclick="abrirEditorOperacion('aportes',${a.id})" style="cursor:pointer;${borderStyle}" title="${tooltipTxt}">
+    <td style="white-space:nowrap">${letraBadge}<span class="pill inst">${a.instruccion||'—'}</span></td>
     <td>${a.cliente}</td><td class="mono">${a.rut}</td><td class="mono">${a.cta||'—'}</td>
-    <td>${a.fondo_mutuo||'—'}${a.letra_op?`<span style="font-size:9px;color:var(--text2);font-family:var(--mono);margin-left:4px;opacity:.7">${a.letra_op}</span>`:''}</td><td class="mono">${a.serie||'—'}</td>
+    <td>${a.fondo_mutuo||'—'}</td><td class="mono">${a.serie||'—'}</td>
     <td class="right mono">${a.monto?'$'+Number(a.monto).toLocaleString('es-CL'):'—'}</td>
     <td style="font-size:11px">${a.forma_pago||'—'}</td>
     <td><span class="executor-tag">${a.ejecutado_por||'—'}</span></td>
     <td style="text-align:center" onclick="event.stopPropagation()">${emailBadgeHtml(a,'aportes')}</td>
     <td onclick="event.stopPropagation()"><button class="btn sm danger" onclick="eliminar('aportes',${a.id},'tb-a')">✕</button></td>
-  </tr>`).join('');
+  </tr>`;}).join('');
 }
 function renderSaldos(data) {
   const tb=document.getElementById('tb-s');
@@ -3801,6 +3953,14 @@ function handleChatInput(text) {
 
     case 'await_missing_field':
       handleMissingField(text.trim());
+      return;
+    
+    case 'await_cta_cruce':
+      handleCtaCruce(text.trim());
+      return;
+    
+    case 'await_corredora_bloque':
+      handleCorredoraBloque(text.trim());
       return;
 
     default:
@@ -5099,8 +5259,98 @@ function continuarFlujoCruce(parsed) {
     botMsg(`¿Cuál es el <strong>RUT</strong> de ${sinRut.nombre}? (ej: <em>12345678-9</em>)`);
     return;
   }
+  
+  // ── Resolver CUENTAS de cada participante según la corredora ─────
+  // Si el participante ya tiene cta asignada, OK.
+  // Si tiene clienteResult con cuentas para esa corredora → usar la primera (o pedir si hay varias).
+  // Si no tiene cuenta para esa corredora → preguntar al banquero.
+  const corrUpper = (parsed.corredora || '').toUpperCase().trim();
+  for (const pt of todosPart) {
+    if (pt.cta) continue; // ya tiene cuenta
+    
+    // Buscar el cliente en DB por RUT
+    const cliente = DB_CLIENTES.find(c => c.rut === pt.rut) || pt.clienteResult?.cliente;
+    const cuentasCliente = cliente?.cuentas || [];
+    
+    // Cuentas que matchean la corredora del cruce
+    const cuentasMatch = cuentasCliente.filter(cu => 
+      (cu.corredora||'').toUpperCase().trim() === corrUpper
+    );
+    
+    if (cuentasMatch.length === 1) {
+      // Una sola → autoasignar
+      pt.cta = cuentasMatch[0].cta;
+    } else if (cuentasMatch.length > 1) {
+      // Varias → preguntar cuál
+      chatContext = {state:'await_cta_cruce', parsed, participante:pt, cuentasOpts:cuentasMatch};
+      const opts = cuentasMatch.map(cu => 
+        `<button class="alias-opt" onclick="selectCtaCruceBtn('${cu.cta}')">Cta. ${cu.cta}</button>`
+      ).join('');
+      botMsg(`<strong>${pt.nombre}</strong> tiene varias cuentas en <strong>${corrUpper}</strong>. ¿Cuál usar?`,
+        `<div class="alias-suggestion" style="margin-top:6px">
+          <div class="alias-sug-title">Seleccioná la cuenta</div>
+          <div class="alias-sug-opts">${opts}</div>
+        </div>`);
+      return;
+    } else {
+      // Ninguna cuenta para esa corredora → pedir al banquero
+      chatContext = {state:'await_cta_cruce', parsed, participante:pt, cuentasOpts:[]};
+      const otrasCuentas = cuentasCliente.length 
+        ? `<br><span style="font-size:10px;color:var(--text2)">Cuentas conocidas en otras corredoras: ${cuentasCliente.map(c=>'Cta.'+c.cta+(c.corredora?' ('+c.corredora+')':'')).join(', ')}</span>`
+        : '';
+      botMsg(`<strong>${pt.nombre}</strong> no tiene cuenta registrada en <strong>${corrUpper}</strong>.<br>¿Cuál es el número de cuenta? (Escribilo o decime "sin cuenta" para dejarlo vacío)${otrasCuentas}`);
+      return;
+    }
+  }
+  
   // Todo listo → mostrar confirmación
   showCruceConfirm(parsed);
+}
+
+// Handler del botón de selección de cuenta en cruce
+function selectCtaCruceBtn(cta) {
+  if (!chatContext || chatContext.state !== 'await_cta_cruce') return;
+  const {parsed, participante} = chatContext;
+  participante.cta = cta;
+  botMsg(`✓ ${participante.nombre} → Cta. <strong>${cta}</strong>`);
+  // Persistir en DB de cliente: agregar la cuenta si no existía
+  if (participante.rut) {
+    autoGuardarCliente(participante.rut, participante.nombre, cta, parsed.corredora||'').catch(()=>{});
+  }
+  chatContext = null;
+  continuarFlujoCruce(parsed);
+}
+
+// Handler cuando el banquero escribe la cuenta a mano (no usa botón)
+function handleCtaCruce(text) {
+  if (!chatContext || chatContext.state !== 'await_cta_cruce') return;
+  const {parsed, participante} = chatContext;
+  const tl = text.toLowerCase().trim();
+  
+  // Opciones: "sin cuenta" / "skip" / "no" → dejar vacío
+  if (/^(sin\s*cuenta|sin\s*cta|skip|no|ninguna|vacia|vac[ií]a)$/i.test(tl)) {
+    participante.cta = '';
+    botMsg(`✓ ${participante.nombre} → sin cuenta (cuenta vacía en la orden)`);
+    chatContext = null;
+    continuarFlujoCruce(parsed);
+    return;
+  }
+  
+  // Aceptar formato de cuenta: número, alfanumérico (corredoras a veces usan formato tipo "1234-5")
+  const ctaMatch = text.match(/[\w\-]{1,20}/);
+  if (!ctaMatch) {
+    botMsg('⚠ No reconocí el número de cuenta. Escribilo así: <em>12345</em> o decime "sin cuenta".');
+    return;
+  }
+  const cta = ctaMatch[0].trim();
+  participante.cta = cta;
+  botMsg(`✓ ${participante.nombre} → Cta. <strong>${cta}</strong>`);
+  // Persistir si tiene RUT
+  if (participante.rut) {
+    autoGuardarCliente(participante.rut, participante.nombre, cta, parsed.corredora||'').catch(()=>{});
+  }
+  chatContext = null;
+  continuarFlujoCruce(parsed);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -5378,6 +5628,66 @@ function splitEnOrdenes(text) {
     }
     if (parts.length >= 2 && parts.every(p => p.length > 5)) return parts;
   }
+  
+  // ── Estrategia 3: UN verbo + múltiples montos a múltiples clientes ───
+  // Patrón: "compra 20 palos del albion a mario, 30 palos a Fabian, 15 palos a Iker"
+  //         "vende 100 COPEC a Juan, 50 a Pedro, 200 a Marta"
+  // Detectar: verbo seguido de [monto + cant + nemo + "a/para [Cliente]"] repetido con comas
+  if (matches.length === 1) {
+    // Hay un solo verbo (al inicio). Buscar segmentos separados por comas que tengan estructura:
+    //   "(monto)? (cant)? palos? (nemo)? (a|para) (Cliente)"
+    // que se repitan a continuación del primero.
+    const verbMatch = matches[0];
+    const verbEnd = verbMatch.index + verbMatch[0].length;
+    const afterVerb = text.slice(verbEnd);
+    
+    // Buscar montos con cantidad+unidad: "20 palos", "100 millones", "5 mm", "1500000"
+    const montoUnitRe = /(\d[\d.,]*)\s*(palos?|millones?|mm?\b|lucas?)?/i;
+    
+    // Splittear por comas (top-level)
+    const segments = text.split(/,\s*/).map(s => s.trim()).filter(Boolean);
+    
+    // Solo aplicar si hay >= 2 segmentos Y el primero contiene el verbo
+    if (segments.length >= 2 && verbPattern.test(segments[0])) {
+      // Validar que cada segmento (excepto el primero) tenga un monto + cliente
+      // Patrón: "<monto> palos? [del? <nemo>?] a/para? <Cliente con mayúscula>"
+      const segHasMontoYCliente = (s) => {
+        const tieneMonto = /\d[\d.,]*/.test(s);
+        // "a [Nombre Mayúscula]" o "para [Nombre]"
+        const tieneCliente = /\b(a|para)\s+[A-ZÁÉÍÓÚa-záéíóú]{2,}/i.test(s);
+        return tieneMonto && tieneCliente;
+      };
+      
+      const allMatch = segments.slice(1).every(segHasMontoYCliente);
+      if (allMatch) {
+        // Reconstruir cada segmento agregando el verbo + nemo al inicio si falta
+        // Extraer del primer segmento: verbo, nemo (si está)
+        const firstSeg = segments[0];
+        const verbStr = verbMatch[0]; // "compra", "vende", etc.
+        
+        // Extraer nemo del primer segmento: "compra 20 palos del ALBION a..." → "ALBION"
+        let nemoStr = '';
+        const nemoMatch = firstSeg.match(/(?:de(?:l)?|al|el|la)\s+([A-Za-zÁÉÍÓÚáéíóúñÑ][A-Za-zÁÉÍÓÚáéíóúñÑ\s\-]*?)(?:\s+(?:a|para|por|v[ií]a)\s+|$)/i);
+        if (nemoMatch) nemoStr = nemoMatch[1].trim().replace(/\s+/g,' ');
+        
+        // Reconstruir cada segmento (excepto el primero) para que tenga verbo + nemo
+        const reconstructed = [segments[0]];
+        for (let j = 1; j < segments.length; j++) {
+          let seg = segments[j];
+          // Si no tiene nemo, agregarlo después del monto
+          // "30 palos a Fabian" → "compra 30 palos de ALBION a Fabian"
+          if (nemoStr && !new RegExp(`\\b${nemoStr.replace(/\s+/g,'\\s+')}\\b`, 'i').test(seg)) {
+            seg = seg.replace(/^(\d[\d.,]*\s*(?:palos?|millones?|mm?\b|lucas?)?)/i, `${verbStr} $1 de ${nemoStr}`);
+          } else {
+            // Tiene nemo pero falta el verbo
+            seg = `${verbStr} ${seg}`;
+          }
+          reconstructed.push(seg);
+        }
+        if (reconstructed.length >= 2) return reconstructed;
+      }
+    }
+  }
 
   return [text]; // operación simple
 }
@@ -5479,7 +5789,64 @@ function procesarBloqueMultiple(partes) {
     return;
   }
 
+  // ── UNIFICAR CORREDORA: todas las ops del bloque van por la misma ──
+  // Buscar corredoras detectadas en cada op
+  const corredorasDetectadas = ordenesParsed
+    .map(o => (o.corredora || '').toUpperCase().trim())
+    .filter(Boolean);
+  const uniqueCorredoras = [...new Set(corredorasDetectadas)];
+  
+  if (uniqueCorredoras.length === 1) {
+    // Todas las que se detectaron son iguales → propagar a las que no tenían
+    const corr = uniqueCorredoras[0];
+    for (const o of ordenesParsed) {
+      if (!o.corredora) o.corredora = corr;
+    }
+  } else if (uniqueCorredoras.length > 1) {
+    // Conflicto: distintas corredoras detectadas → preguntar al banquero
+    chatContext = {state:'await_corredora_bloque', ordenesParsed, errores, opciones:uniqueCorredoras};
+    const opts = uniqueCorredoras.map(c => 
+      `<button class="alias-opt" onclick="selectCorredoraBloqueBtn('${c}')">${c}</button>`
+    ).join('');
+    botMsg(`⚠ Detecté varias corredoras (${uniqueCorredoras.join(', ')}), pero un bloque múltiple debe ir por <strong>UNA sola</strong>. ¿Por cuál?`,
+      `<div class="alias-suggestion" style="margin-top:6px">
+        <div class="alias-sug-title">Seleccioná la corredora del bloque</div>
+        <div class="alias-sug-opts">${opts}</div>
+      </div>`);
+    return;
+  } else {
+    // Ninguna corredora detectada → preguntar
+    chatContext = {state:'await_corredora_bloque', ordenesParsed, errores, opciones:[]};
+    botMsg(`¿Por qué corredora va el bloque de <strong>${ordenesParsed.length}</strong> operaciones? (ej: <em>MBI</em>, <em>LV</em>, <em>BTG</em>)`);
+    return;
+  }
+
   // Mostrar resumen del bloque
+  showBloqueConfirm(ordenesParsed, errores);
+}
+
+// Handler de selección de corredora para bloque múltiple
+function selectCorredoraBloqueBtn(corredora) {
+  if (!chatContext || chatContext.state !== 'await_corredora_bloque') return;
+  const {ordenesParsed, errores} = chatContext;
+  for (const o of ordenesParsed) o.corredora = corredora;
+  botMsg(`✓ Corredora del bloque: <strong>${corredora}</strong>`);
+  chatContext = null;
+  showBloqueConfirm(ordenesParsed, errores);
+}
+
+// Handler cuando el banquero escribe corredora a mano
+function handleCorredoraBloque(text) {
+  if (!chatContext || chatContext.state !== 'await_corredora_bloque') return;
+  const corr = text.trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,15}$/i.test(corr)) {
+    botMsg('⚠ No reconocí la corredora. Escribí solo el nombre (ej: <em>LV</em>, <em>MBI</em>, <em>BTG</em>).');
+    return;
+  }
+  const {ordenesParsed, errores} = chatContext;
+  for (const o of ordenesParsed) o.corredora = corr;
+  botMsg(`✓ Corredora del bloque: <strong>${corr}</strong>`);
+  chatContext = null;
   showBloqueConfirm(ordenesParsed, errores);
 }
 
@@ -6677,44 +7044,148 @@ function setResumenFecha(offset) {
   cargarResumenes();
 }
 
-async function cargarResumenes() {
-  // Init date picker to today if empty
-  const picker = document.getElementById('res-fecha');
-  if (!picker.value) picker.value = todayStr();
-  const fecha = picker.value; // fecha is always local YYYY-MM-DD
+// Estado de los resúmenes
+let RES_PRESET = 'hoy';        // hoy | semana | mes | año | custom
+let RES_TAB = 'ordenes';       // ordenes | aportes
+let RES_RANGE = null;          // {desde, hasta} si custom
 
-  // Show label
-  const label = document.getElementById('res-fecha-label');
-  if (label) {
-    const isToday = fecha === todayStr();
-    const d = new Date(fecha + 'T12:00:00');
-    label.textContent = isToday ? '— Hoy' : '— ' + d.toLocaleDateString('es-CL',{weekday:'long',day:'numeric',month:'long'});
+function setResumenPreset(preset) {
+  RES_PRESET = preset;
+  RES_RANGE = null;
+  // Limpiar inputs de rango
+  const d = document.getElementById('res-fecha-desde');
+  const h = document.getElementById('res-fecha-hasta');
+  if (d) d.value = '';
+  if (h) h.value = '';
+  // Actualizar visual de botones
+  document.querySelectorAll('.res-preset').forEach(b => {
+    b.classList.toggle('active', b.dataset.preset === preset);
+  });
+  cargarResumenes();
+}
+
+function setResumenCustom() {
+  const d = document.getElementById('res-fecha-desde').value;
+  const h = document.getElementById('res-fecha-hasta').value;
+  if (!d && !h) return;
+  RES_PRESET = 'custom';
+  RES_RANGE = {desde: d, hasta: h};
+  document.querySelectorAll('.res-preset').forEach(b => b.classList.remove('active'));
+  cargarResumenes();
+}
+
+function setResumenTab(tab) {
+  RES_TAB = tab;
+  document.querySelectorAll('.res-tab-btn').forEach(b => {
+    const active = b.dataset.tab === tab;
+    b.classList.toggle('active', active);
+    b.style.color = active ? 'var(--accent)' : 'var(--text2)';
+    b.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+  });
+  document.getElementById('res-block-ordenes').style.display = tab === 'ordenes' ? '' : 'none';
+  document.getElementById('res-block-aportes').style.display = tab === 'aportes' ? '' : 'none';
+}
+
+// Calcula {desde, hasta} ISO en función del preset/range
+function calcularRangoFechas() {
+  if (RES_PRESET === 'custom' && RES_RANGE) {
+    return {
+      desde: RES_RANGE.desde || RES_RANGE.hasta,
+      hasta: RES_RANGE.hasta || RES_RANGE.desde
+    };
   }
+  const today = todayStr();
+  const d = new Date(today + 'T12:00:00');
+  if (RES_PRESET === 'hoy') {
+    return {desde: today, hasta: today};
+  }
+  if (RES_PRESET === 'semana') {
+    // Lunes a hoy
+    const day = d.getDay() || 7; // domingo = 7
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - (day - 1));
+    return {desde: monday.toISOString().slice(0,10), hasta: today};
+  }
+  if (RES_PRESET === 'mes') {
+    const first = new Date(d.getFullYear(), d.getMonth(), 1);
+    return {desde: first.toISOString().slice(0,10), hasta: today};
+  }
+  if (RES_PRESET === 'año') {
+    const first = new Date(d.getFullYear(), 0, 1);
+    return {desde: first.toISOString().slice(0,10), hasta: today};
+  }
+  return {desde: today, hasta: today};
+}
 
-  const { data: ordenes } = await SB.from('ordenes').select('*').eq('fecha',fecha).order('id',{ascending:false});
-  const { data: aportes } = await SB.from('aportes').select('*').eq('fecha',fecha);
+function labelRango({desde, hasta}) {
+  if (desde === hasta) {
+    if (desde === todayStr()) return '— Hoy';
+    const d = new Date(desde + 'T12:00:00');
+    return '— ' + d.toLocaleDateString('es-CL', {weekday:'long', day:'numeric', month:'long'});
+  }
+  const dD = new Date(desde + 'T12:00:00');
+  const dH = new Date(hasta + 'T12:00:00');
+  const sameYear = dD.getFullYear() === dH.getFullYear();
+  return `— ${dD.toLocaleDateString('es-CL',{day:'numeric',month:'short'})} → ${dH.toLocaleDateString('es-CL',{day:'numeric',month:'short',year: sameYear?undefined:'numeric'})}`;
+}
+
+async function cargarResumenes() {
+  const rango = calcularRangoFechas();
+  const label = document.getElementById('res-fecha-label');
+  if (label) label.textContent = labelRango(rango);
+  
+  // Sincronizar inputs de fecha cuando es preset
+  if (RES_PRESET !== 'custom') {
+    const dD = document.getElementById('res-fecha-desde');
+    const dH = document.getElementById('res-fecha-hasta');
+    if (dD) dD.value = '';
+    if (dH) dH.value = '';
+  }
+  
+  // Queries por rango
+  const { data: ordenes } = await SB.from('ordenes').select('*')
+    .gte('fecha', rango.desde).lte('fecha', rango.hasta)
+    .order('id', {ascending:false});
+  const { data: aportes } = await SB.from('aportes').select('*')
+    .gte('fecha', rango.desde).lte('fecha', rango.hasta)
+    .order('id', {ascending:false});
+  
   const todos = ordenes || [];
   const aportesTodos = aportes || [];
-
-  // ── Header metrics ──
-  const montoTotal = todos.reduce((a,o) => a + ((o.precio||0)*(o.cantidad||0)), 0);
-  const banquerosActivos = new Set(todos.map(o=>o.ejecutado_por).filter(Boolean)).size;
-  document.getElementById('res-monto-total').textContent = '$'+Math.round(montoTotal).toLocaleString('es-CL');
-  document.getElementById('res-ordenes-total').textContent = todos.length;
-  document.getElementById('res-banqueros-activos').textContent = `${banquerosActivos} banquero${banquerosActivos!==1?'s':''} operando hoy`;
-
-  // ── Mis operaciones (historial banquero actual) ──
+  
+  // ── KPIs ──
+  const montoOrdenes = todos.reduce((a,o) => a + ((o.precio||0)*(o.cantidad||0)), 0);
+  const aportesPuros = aportesTodos.filter(a => /aporte|suscripci/i.test(a.instruccion||''));
+  const rescates = aportesTodos.filter(a => /rescate/i.test(a.instruccion||''));
+  const montoAportes = aportesPuros.reduce((s,a) => s + Number(a.monto||0), 0);
+  const montoRescates = rescates.reduce((s,a) => s + Number(a.monto||0), 0);
+  const netoFFMM = montoAportes - montoRescates;
+  
+  document.getElementById('res-ord-monto').textContent = '$'+Math.round(montoOrdenes).toLocaleString('es-CL');
+  document.getElementById('res-ord-count').textContent = `${todos.length} órden${todos.length===1?'':'es'}`;
+  document.getElementById('res-ap-monto').textContent = '$'+Math.round(montoAportes).toLocaleString('es-CL');
+  document.getElementById('res-ap-count').textContent = `${aportesPuros.length} ops`;
+  document.getElementById('res-rs-monto').textContent = '$'+Math.round(montoRescates).toLocaleString('es-CL');
+  document.getElementById('res-rs-count').textContent = `${rescates.length} ops`;
+  const netoEl = document.getElementById('res-neto-monto');
+  netoEl.textContent = (netoFFMM>=0?'+':'')+'$'+Math.round(netoFFMM).toLocaleString('es-CL');
+  netoEl.style.color = netoFFMM >= 0 ? 'var(--accent)' : 'var(--venta)';
+  
+  // ═══════ BLOQUE ÓRDENES ═══════
+  
+  // Mis órdenes
   const misOrdenes = todos.filter(o => o.ejecutado_por === CURRENT_USER?.nombre);
   document.getElementById('res-mis-count').textContent = `${misOrdenes.length} operaciones`;
   const tbMis = document.getElementById('tb-mis-ordenes');
   if (!misOrdenes.length) {
-    tbMis.innerHTML = `<tr><td colspan="8" class="empty">Sin operaciones hoy</td></tr>`;
+    tbMis.innerHTML = `<tr><td colspan="8" class="empty">Sin operaciones</td></tr>`;
   } else {
     tbMis.innerHTML = misOrdenes.map(o => {
       const total = (o.precio||0)*(o.cantidad||0);
-      const hora  = o.created_at ? new Date(o.created_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) : '—';
+      const fechaCorta = o.fecha ? o.fecha.split('-').slice(1).reverse().join('/') : '—';
+      const hora = o.created_at ? new Date(o.created_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) : '';
       return `<tr>
-        <td class="mono" style="color:var(--text2)">${hora}</td>
+        <td class="mono" style="color:var(--text2);font-size:11px">${fechaCorta} ${hora}</td>
         <td><span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
         <td class="mono" style="font-weight:600">${o.nemo||'—'}</td>
         <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${o.cliente}</td>
@@ -6725,84 +7196,18 @@ async function cargarResumenes() {
       </tr>`;
     }).join('');
   }
-
-  // ── Top nemos ──
+  
+  // Top nemos
   const nemoMap = {};
   todos.forEach(o => {
     if (!o.nemo) return;
-    if (!nemoMap[o.nemo]) nemoMap[o.nemo] = {ordenes:0, monto:0, ultima:o.operacion};
+    if (!nemoMap[o.nemo]) nemoMap[o.nemo] = {ordenes:0, monto:0};
     nemoMap[o.nemo].ordenes++;
     nemoMap[o.nemo].monto += (o.precio||0)*(o.cantidad||0);
   });
-  const topNemos = Object.entries(nemoMap).sort((a,b)=>b[1].monto-a[1].monto).slice(0,10);
-  const tbNemos = document.getElementById('tb-top-nemos');
-  if (!topNemos.length) {
-    tbNemos.innerHTML = `<tr><td colspan="4" class="empty">Sin datos</td></tr>`;
-  } else {
-    const maxMonto = topNemos[0][1].monto || 1;
-    tbNemos.innerHTML = topNemos.map(([nemo, d]) => {
-      const pct = Math.round(d.monto/maxMonto*100);
-      return `<tr>
-        <td>
-          <div style="font-family:var(--mono);font-weight:600">${nemo}</div>
-          <div style="height:3px;background:var(--surface3);border-radius:2px;margin-top:4px;width:100%">
-            <div style="height:3px;background:var(--accent);border-radius:2px;width:${pct}%"></div>
-          </div>
-        </td>
-        <td class="right mono">${d.ordenes}</td>
-        <td class="right mono" style="font-weight:600">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
-        <td><span class="pill ${d.ultima==='COMPRA'?'compra':'venta'}" style="font-size:9px">${d.ultima}</span></td>
-      </tr>`;
-    }).join('');
-  }
-
-  // ── Top clientes ──
-  const clienteMap = {};
-  todos.forEach(o => {
-    if (!o.cliente) return;
-    if (!clienteMap[o.cliente]) clienteMap[o.cliente] = {ordenes:0, monto:0};
-    clienteMap[o.cliente].ordenes++;
-    clienteMap[o.cliente].monto += (o.precio||0)*(o.cantidad||0);
-  });
-  const topClientes = Object.entries(clienteMap).sort((a,b)=>b[1].monto-a[1].monto).slice(0,8);
-  const tbClientes = document.getElementById('tb-top-clientes');
-  if (!topClientes.length) {
-    tbClientes.innerHTML = `<tr><td colspan="3" class="empty">Sin datos</td></tr>`;
-  } else {
-    tbClientes.innerHTML = topClientes.map(([cli, d]) => `<tr>
-      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${cli}</td>
-      <td class="right mono">${d.ordenes}</td>
-      <td class="right mono" style="font-weight:600">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
-    </tr>`).join('');
-  }
-
-  // ── Top banqueros ──
-  const banqueroMap = {};
-  todos.forEach(o => {
-    if (!o.ejecutado_por) return;
-    if (!banqueroMap[o.ejecutado_por]) banqueroMap[o.ejecutado_por] = {ordenes:0, monto:0, ultima:'—'};
-    banqueroMap[o.ejecutado_por].ordenes++;
-    banqueroMap[o.ejecutado_por].monto += (o.precio||0)*(o.cantidad||0);
-    if (o.created_at) banqueroMap[o.ejecutado_por].ultima =
-      new Date(o.created_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
-  });
-  const topBanqueros = Object.entries(banqueroMap).sort((a,b)=>b[1].ordenes-a[1].ordenes);
-  const tbBanqueros = document.getElementById('tb-top-banqueros');
-  if (!topBanqueros.length) {
-    tbBanqueros.innerHTML = `<tr><td colspan="4" class="empty">Sin datos</td></tr>`;
-  } else {
-    tbBanqueros.innerHTML = topBanqueros.map(([b, d]) => {
-      const isMine = b === CURRENT_USER?.nombre;
-      return `<tr style="${isMine?'background:var(--accent-dim)':''}">
-        <td style="font-weight:${isMine?'600':'400'};color:${isMine?'var(--accent)':'var(--text)'}">${b}${isMine?' ★':''}</td>
-        <td class="right mono">${d.ordenes}</td>
-        <td class="right mono">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
-        <td class="mono" style="color:var(--text2)">${d.ultima}</td>
-      </tr>`;
-    }).join('');
-  }
-
-  // ── Top corredoras ──
+  renderRankingSimple('tb-top-nemos', nemoMap, 10, true);
+  
+  // Top corredoras
   const corrMap = {};
   todos.forEach(o => {
     const k = o.corredora||'Sin corredora';
@@ -6810,17 +7215,138 @@ async function cargarResumenes() {
     corrMap[k].ordenes++;
     corrMap[k].monto += (o.precio||0)*(o.cantidad||0);
   });
-  const topCorr = Object.entries(corrMap).sort((a,b)=>b[1].monto-a[1].monto);
-  const tbCorr = document.getElementById('tb-top-corredoras');
-  if (!topCorr.length) {
-    tbCorr.innerHTML = `<tr><td colspan="3" class="empty">Sin datos</td></tr>`;
+  renderRankingSimple('tb-top-corredoras', corrMap, 10, false);
+  
+  // Top clientes
+  const clienteMap = {};
+  todos.forEach(o => {
+    if (!o.cliente) return;
+    if (!clienteMap[o.cliente]) clienteMap[o.cliente] = {ordenes:0, monto:0};
+    clienteMap[o.cliente].ordenes++;
+    clienteMap[o.cliente].monto += (o.precio||0)*(o.cantidad||0);
+  });
+  renderRankingSimple('tb-top-clientes', clienteMap, 8, false);
+  
+  // Top banqueros
+  const banqueroMap = {};
+  todos.forEach(o => {
+    if (!o.ejecutado_por) return;
+    if (!banqueroMap[o.ejecutado_por]) banqueroMap[o.ejecutado_por] = {ordenes:0, monto:0};
+    banqueroMap[o.ejecutado_por].ordenes++;
+    banqueroMap[o.ejecutado_por].monto += (o.precio||0)*(o.cantidad||0);
+  });
+  renderRankingBanqueros('tb-top-banqueros', banqueroMap);
+  
+  // ═══════ BLOQUE APORTES/RESCATES ═══════
+  
+  // Mis aportes
+  const misAportes = aportesTodos.filter(a => a.ejecutado_por === CURRENT_USER?.nombre);
+  document.getElementById('res-mis-count-ap').textContent = `${misAportes.length} operaciones`;
+  const tbMisA = document.getElementById('tb-mis-aportes');
+  if (!misAportes.length) {
+    tbMisA.innerHTML = `<tr><td colspan="7" class="empty">Sin operaciones</td></tr>`;
   } else {
-    tbCorr.innerHTML = topCorr.map(([c,d]) => `<tr>
-      <td class="mono" style="font-weight:600">${c}</td>
+    tbMisA.innerHTML = misAportes.map(a => {
+      const fechaCorta = a.fecha ? a.fecha.split('-').slice(1).reverse().join('/') : '—';
+      const instColor = /rescate/i.test(a.instruccion||'') ? 'var(--venta)' : 'var(--compra)';
+      return `<tr>
+        <td class="mono" style="color:var(--text2);font-size:11px">${fechaCorta}</td>
+        <td><span style="background:${instColor};color:#fff;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:700;font-family:var(--mono)">${a.instruccion||'—'}</span></td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${a.cliente||'—'}</td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${a.fondo_mutuo||'—'}</td>
+        <td class="mono">${a.serie||'—'}</td>
+        <td class="right mono" style="color:${instColor};font-weight:600">${a.monto?'$'+Number(a.monto).toLocaleString('es-CL'):'—'}</td>
+        <td style="font-size:10px;color:var(--text2)">${a.forma_pago||'—'}</td>
+      </tr>`;
+    }).join('');
+  }
+  
+  // Top fondos (por monto total: aportes + rescates)
+  const fondoMap = {};
+  aportesTodos.forEach(a => {
+    const k = a.fondo_mutuo || 'Sin fondo';
+    if (!fondoMap[k]) fondoMap[k] = {ordenes:0, monto:0};
+    fondoMap[k].ordenes++;
+    fondoMap[k].monto += Number(a.monto||0);
+  });
+  renderRankingSimple('tb-top-fondos', fondoMap, 10, false);
+  
+  // Top clientes FFMM (neto: aportes - rescates)
+  const clienteAPMap = {};
+  aportesTodos.forEach(a => {
+    if (!a.cliente) return;
+    if (!clienteAPMap[a.cliente]) clienteAPMap[a.cliente] = {ordenes:0, monto:0};
+    clienteAPMap[a.cliente].ordenes++;
+    const monto = Number(a.monto||0);
+    clienteAPMap[a.cliente].monto += /rescate/i.test(a.instruccion||'') ? -monto : monto;
+  });
+  renderRankingSimple('tb-top-clientes-ap', clienteAPMap, 8, false, true /* signed */);
+  
+  // Top banqueros FFMM
+  const banqueroAPMap = {};
+  aportesTodos.forEach(a => {
+    if (!a.ejecutado_por) return;
+    if (!banqueroAPMap[a.ejecutado_por]) banqueroAPMap[a.ejecutado_por] = {ordenes:0, monto:0};
+    banqueroAPMap[a.ejecutado_por].ordenes++;
+    banqueroAPMap[a.ejecutado_por].monto += Number(a.monto||0);
+  });
+  renderRankingBanqueros('tb-top-banqueros-ap', banqueroAPMap);
+  
+  // Por instrucción
+  const instMap = {};
+  aportesTodos.forEach(a => {
+    const k = a.instruccion || 'Sin instrucción';
+    if (!instMap[k]) instMap[k] = {ordenes:0, monto:0};
+    instMap[k].ordenes++;
+    instMap[k].monto += Number(a.monto||0);
+  });
+  renderRankingSimple('tb-top-instrucciones', instMap, 10, false);
+}
+
+// Render genérico de ranking. signed=true → muestra +/-
+function renderRankingSimple(tbId, mapa, limite, withBar, signed=false) {
+  const tb = document.getElementById(tbId);
+  if (!tb) return;
+  const entries = Object.entries(mapa).sort((a,b) => Math.abs(b[1].monto) - Math.abs(a[1].monto)).slice(0, limite);
+  if (!entries.length) {
+    tb.innerHTML = `<tr><td colspan="3" class="empty">Sin datos</td></tr>`;
+    return;
+  }
+  const maxMonto = Math.max(...entries.map(e => Math.abs(e[1].monto)), 1);
+  tb.innerHTML = entries.map(([k, d]) => {
+    const pct = Math.round(Math.abs(d.monto) / maxMonto * 100);
+    const sign = signed && d.monto < 0 ? '-' : (signed && d.monto > 0 ? '+' : '');
+    const color = signed ? (d.monto < 0 ? 'var(--venta)' : 'var(--accent)') : '';
+    const montoStr = d.monto ? sign + '$' + Math.round(Math.abs(d.monto)).toLocaleString('es-CL') : '—';
+    return `<tr>
+      <td>
+        <div style="font-family:var(--mono);font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis">${k}</div>
+        ${withBar ? `<div style="height:3px;background:var(--surface2);border-radius:2px;margin-top:4px;width:100%">
+          <div style="height:3px;background:var(--accent);border-radius:2px;width:${pct}%"></div>
+        </div>` : ''}
+      </td>
+      <td class="right mono">${d.ordenes}</td>
+      <td class="right mono" style="font-weight:600;${color?'color:'+color:''}">${montoStr}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderRankingBanqueros(tbId, mapa) {
+  const tb = document.getElementById(tbId);
+  if (!tb) return;
+  const entries = Object.entries(mapa).sort((a,b) => b[1].monto - a[1].monto);
+  if (!entries.length) {
+    tb.innerHTML = `<tr><td colspan="3" class="empty">Sin datos</td></tr>`;
+    return;
+  }
+  tb.innerHTML = entries.map(([b, d]) => {
+    const isMine = b === CURRENT_USER?.nombre;
+    return `<tr style="${isMine?'background:rgba(0,229,150,0.05)':''}">
+      <td style="font-weight:${isMine?'600':'400'};color:${isMine?'var(--accent)':'var(--text)'}">${b}${isMine?' ★':''}</td>
       <td class="right mono">${d.ordenes}</td>
       <td class="right mono" style="font-weight:600">${d.monto?'$'+Math.round(d.monto).toLocaleString('es-CL'):'—'}</td>
-    </tr>`).join('');
-  }
+    </tr>`;
+  }).join('');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -7166,23 +7692,30 @@ function updateEmailAutoUI(on) {
     status.textContent = on ? 'ACTIVADO' : 'DESACTIVADO';
     status.style.color = on ? 'var(--accent)' : 'var(--warn)';
   }
-  // Botón del chat
-  const dot = document.getElementById('chat-email-auto-dot');
+  // Switch del chat header
+  const track = document.getElementById('chat-email-track');
+  const thumb = document.getElementById('chat-email-thumb');
   const txt = document.getElementById('chat-email-auto-text');
-  const btn = document.getElementById('chat-email-auto-btn');
-  if (dot && txt && btn) {
+  const sw = document.getElementById('chat-email-auto-switch');
+  if (track && thumb && txt && sw) {
     if (on) {
-      dot.style.background = 'var(--accent)';
-      txt.textContent = 'Email automático';
-      btn.style.color = 'var(--accent)';
-      btn.style.borderColor = 'var(--accent)';
-      btn.title = 'Email automático ACTIVADO · click para desactivar';
+      // ON: verde, thumb a la derecha
+      track.style.background = 'rgba(0,229,150,0.25)';
+      thumb.style.left = '17px';
+      thumb.style.background = 'var(--accent)';
+      txt.textContent = 'EMAIL ON';
+      txt.style.color = 'var(--accent)';
+      sw.style.borderColor = 'var(--accent)';
+      sw.title = 'Email automático ACTIVADO · click para desactivar';
     } else {
-      dot.style.background = 'var(--warn)';
-      txt.textContent = 'Email manual';
-      btn.style.color = 'var(--text2)';
-      btn.style.borderColor = 'var(--border)';
-      btn.title = 'Email automático DESACTIVADO · click para activar';
+      // OFF: amarillo, thumb a la izquierda
+      track.style.background = 'rgba(255,193,7,0.25)';
+      thumb.style.left = '1px';
+      thumb.style.background = 'var(--warn)';
+      txt.textContent = 'EMAIL OFF';
+      txt.style.color = 'var(--warn)';
+      sw.style.borderColor = 'var(--border)';
+      sw.title = 'Email automático DESACTIVADO · click para activar';
     }
   }
 }
