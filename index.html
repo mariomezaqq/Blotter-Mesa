@@ -3198,12 +3198,16 @@ function leerEditorFields() {
       moneda: document.getElementById('ed-moneda').value,
     }};
   }
-  return {isGrupo: false, updates: {
+  // Aportes: NO incluir corredora (no es columna en la tabla aportes)
+  // La corredora se infiere desde la cuenta del cliente. Guardamos en _corredoraTemp
+  // para usarla en el envío de email pero NO en el UPDATE.
+  const corredoraField = document.getElementById('ed-corredora');
+  const corredoraVal = corredoraField ? corredoraField.value.trim().toUpperCase() : '';
+  return {isGrupo: false, _corredoraTemp: corredoraVal, updates: {
     instruccion: document.getElementById('ed-instruccion').value,
     cliente: document.getElementById('ed-cliente').value.trim(),
     rut: document.getElementById('ed-rut').value.trim(),
     cta: document.getElementById('ed-cta').value.trim(),
-    corredora: document.getElementById('ed-corredora').value.trim().toUpperCase(),
     fondo_mutuo: document.getElementById('ed-fondo').value.trim(),
     serie: document.getElementById('ed-serie').value.trim().toUpperCase(),
     monto: parseFloat(document.getElementById('ed-monto').value) || null,
@@ -3284,14 +3288,20 @@ async function guardarCambiosEditor(enviarEmail) {
     
     if (enviarEmail) {
       if (!outlookAccount) { alert('Conectá Outlook primero (Configuración → Outlook)'); return; }
-      const corrKey = (data.corredora||'').toUpperCase();
-      if (!corredorasConfig[corrKey]) { alert(`No hay email configurado para la corredora ${data.corredora}`); return; }
+      // Para aportes la corredora viene del campo extra (no de la BD)
+      const corredoraFinal = tabla === 'aportes' 
+        ? (fields._corredoraTemp || data.corredora || '')
+        : (data.corredora || '');
+      const corrKey = corredoraFinal.toUpperCase();
+      if (!corredorasConfig[corrKey]) { alert(`No hay email configurado para la corredora ${corredoraFinal}`); return; }
       
+      // Para aportes inyectar corredora en data antes de enviar (la usa enviarEmailOutlook para destinatario)
+      const dataParaEmail = {...data, corredora: corredoraFinal};
       const tipo = tabla === 'ordenes' ? 'orden' : 'aporte';
-      const r = await enviarEmailOutlook(data, tipo).catch(e => ({ok:false, msg:e.message}));
+      const r = await enviarEmailOutlook(dataParaEmail, tipo).catch(e => ({ok:false, msg:e.message}));
       if (r.ok) {
         await SB.from(tabla).update({email_enviado:true, email_estado:'enviado'}).eq('id', id);
-        botMsg(`✅ Cambios guardados y email enviado a ${data.corredora}`);
+        botMsg(`✅ Cambios guardados y email enviado a ${corredoraFinal}`);
       } else {
         await SB.from(tabla).update({email_estado:'fallo'}).eq('id', id);
         botMsg(`⚠ Cambios guardados pero el email falló: ${r.msg}`);
