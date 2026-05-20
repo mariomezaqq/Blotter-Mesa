@@ -894,18 +894,27 @@ tr:hover td{background:var(--surface2)}
             <div id="filtro-bar-o"></div>
             <div class="table-toolbar">
               <input class="table-search" placeholder="Buscar..." oninput="filtrar('tb-o',this.value)">
+              <button id="btn-toggle-seleccion" class="btn sm" onclick="toggleModoSeleccion()" style="margin-left:auto">
+                ☑ Seleccionar varias
+              </button>
+              <button id="btn-agrupar-sel" class="btn sm" onclick="agruparSeleccionadas()" style="display:none;background:var(--accent);color:#0d1a0f;font-weight:600;border-color:var(--accent)">
+                ⛓ Agrupar (<span id="cnt-sel">0</span>)
+              </button>
+              <button id="btn-cancelar-sel" class="btn sm danger" onclick="salirModoSeleccion()" style="display:none">
+                ✕ Cancelar
+              </button>
               <span style="font-size:10px;color:var(--text2);font-family:var(--mono)" id="o-count">0 órdenes</span>
             </div>
             <div class="table-scroll">
               <table>
-                <thead><tr>
+                <thead id="thead-o"><tr id="thead-o-tr">
                   <th>Op.</th><th>Nemo</th><th>Cliente</th><th>RUT</th>
                   <th>Cta</th><th>Corredora</th><th class="right">Cantidad</th>
                   <th class="right">Precio</th><th class="right">Total P×Q</th>
                   <th>Cond.</th><th>Moneda</th>
                   <th>Ejecutó</th><th>✉</th><th></th>
                 </tr></thead>
-                <tbody id="tb-o"><tr><td colspan="13" class="empty">Sin órdenes hoy</td></tr></tbody>
+                <tbody id="tb-o"><tr><td colspan="14" class="empty">Sin órdenes hoy</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -3440,6 +3449,117 @@ function setFiltroAportes(f) {
   renderAportes(APORTES_CACHE);
 }
 
+// ═══════ MODO SELECCIÓN MÚLTIPLE (para agrupar órdenes) ═══════
+let MODO_SELECCION = false;
+let SELECCIONADAS = new Set();      // Set de ids de ordenes seleccionadas
+let ULTIMO_CHECK_IDX = null;        // para Shift+click rango
+
+function toggleModoSeleccion() {
+  MODO_SELECCION = !MODO_SELECCION;
+  SELECCIONADAS.clear();
+  ULTIMO_CHECK_IDX = null;
+  updateBotonesSeleccion();
+  renderOrdenes(ORDENES_CACHE);
+}
+
+function salirModoSeleccion() {
+  MODO_SELECCION = false;
+  SELECCIONADAS.clear();
+  ULTIMO_CHECK_IDX = null;
+  updateBotonesSeleccion();
+  renderOrdenes(ORDENES_CACHE);
+}
+
+function updateBotonesSeleccion() {
+  const btnToggle = document.getElementById('btn-toggle-seleccion');
+  const btnAgrupar = document.getElementById('btn-agrupar-sel');
+  const btnCancelar = document.getElementById('btn-cancelar-sel');
+  const cntSel = document.getElementById('cnt-sel');
+  
+  if (!btnToggle) return;
+  
+  if (MODO_SELECCION) {
+    btnToggle.style.display = 'none';
+    btnCancelar.style.display = '';
+    const n = SELECCIONADAS.size;
+    btnAgrupar.style.display = n >= 2 ? '' : 'none';
+    if (cntSel) cntSel.textContent = n;
+  } else {
+    btnToggle.style.display = '';
+    btnAgrupar.style.display = 'none';
+    btnCancelar.style.display = 'none';
+  }
+}
+
+function toggleSeleccionFila(id, idxVisible, evt) {
+  evt = evt || window.event;
+  const isShift = evt && evt.shiftKey;
+  
+  // Shift+click: seleccionar rango desde ULTIMO_CHECK_IDX hasta idxVisible
+  if (isShift && ULTIMO_CHECK_IDX !== null && ULTIMO_CHECK_IDX !== idxVisible) {
+    const visible = aplicarFiltroEmail(ORDENES_CACHE, FILTRO_EMAIL_ORD, 'ordenes');
+    const desde = Math.min(ULTIMO_CHECK_IDX, idxVisible);
+    const hasta = Math.max(ULTIMO_CHECK_IDX, idxVisible);
+    for (let i = desde; i <= hasta; i++) {
+      if (visible[i]) SELECCIONADAS.add(visible[i].id);
+    }
+  } else {
+    if (SELECCIONADAS.has(id)) SELECCIONADAS.delete(id);
+    else SELECCIONADAS.add(id);
+    ULTIMO_CHECK_IDX = idxVisible;
+  }
+  
+  updateBotonesSeleccion();
+  renderOrdenes(ORDENES_CACHE);
+}
+
+async function agruparSeleccionadas() {
+  if (SELECCIONADAS.size < 2) return;
+  
+  // Sacar las filas seleccionadas
+  const filas = ORDENES_CACHE.filter(o => SELECCIONADAS.has(o.id));
+  
+  // Validar misma corredora
+  const corredoras = [...new Set(filas.map(f => (f.corredora||'').toUpperCase().trim()))];
+  if (corredoras.length > 1) {
+    alert(`No se pueden agrupar: las órdenes tienen distintas corredoras (${corredoras.join(', ')}). Todas deben ser de la misma corredora.`);
+    return;
+  }
+  if (corredoras[0] === '') {
+    alert('No se pueden agrupar: alguna orden no tiene corredora asignada. Editá las órdenes y asignales corredora primero.');
+    return;
+  }
+  
+  // Confirmar
+  const fecha = filas[0].fecha;
+  if (!filas.every(f => f.fecha === fecha)) {
+    alert('No se pueden agrupar órdenes de fechas distintas.');
+    return;
+  }
+  
+  const msg = `¿Agrupar ${filas.length} órdenes de ${corredoras[0]} en una sola orden?\n\n` +
+              filas.map(f => `· ${f.operacion} ${f.cantidad?Number(f.cantidad).toLocaleString('es-CL'):'?'} ${f.nemo} → ${f.cliente}`).join('\n');
+  if (!confirm(msg)) return;
+  
+  // Si alguna ya tiene letra_op, reusarla; si no, asignar nueva
+  let letra = filas.find(f => f.letra_op)?.letra_op;
+  if (!letra) {
+    letra = await siguienteLetraDelDia(fecha, 'ordenes');
+  }
+  
+  // Actualizar todas con esa letra_op
+  const ids = filas.map(f => f.id);
+  const {error} = await SB.from('ordenes').update({letra_op: letra}).in('id', ids);
+  if (error) {
+    alert('Error agrupando: ' + error.message);
+    return;
+  }
+  
+  botMsg(`⛓ ${filas.length} órdenes agrupadas como <strong>${letra}</strong> (corredora ${corredoras[0]})`);
+  salirModoSeleccion();
+  await cargarOrdenes();
+}
+
 function renderOrdenes(data) {
   const total=data.length, comp=data.filter(d=>d.operacion==='COMPRA').length, ven=data.filter(d=>d.operacion==='VENTA').length;
   const monto=data.reduce((a,d)=>a+(parseFloat(d.precio||0)*parseFloat(d.cantidad||0)),0);
@@ -3448,6 +3568,21 @@ function renderOrdenes(data) {
   document.getElementById('m-ven').textContent=ven;
   document.getElementById('m-monto').textContent='$'+Math.round(monto).toLocaleString('es-CL');
   document.getElementById('o-count').textContent=total+' órdenes';
+  
+  // Ajustar thead según modo selección
+  const theadTr = document.getElementById('thead-o-tr');
+  if (theadTr) {
+    const tieneCheckCol = theadTr.firstElementChild?.classList?.contains('th-check');
+    if (MODO_SELECCION && !tieneCheckCol) {
+      const th = document.createElement('th');
+      th.className = 'th-check';
+      th.style.cssText = 'text-align:center;width:32px';
+      th.innerHTML = '☑';
+      theadTr.insertBefore(th, theadTr.firstChild);
+    } else if (!MODO_SELECCION && tieneCheckCol) {
+      theadTr.removeChild(theadTr.firstChild);
+    }
+  }
   
   // Render filter bar above the table
   const cuentas = contadoresEmail(data);
@@ -3466,7 +3601,8 @@ function renderOrdenes(data) {
   }
   
   const tb=document.getElementById('tb-o');
-  if(!visible.length){tb.innerHTML=`<tr><td colspan="13" class="empty">${data.length?'Sin órdenes con este filtro':'Sin órdenes hoy'}</td></tr>`;return;}
+  const colspanVacio = MODO_SELECCION ? 15 : 14;
+  if(!visible.length){tb.innerHTML=`<tr><td colspan="${colspanVacio}" class="empty">${data.length?'Sin órdenes con este filtro':'Sin órdenes hoy'}</td></tr>`;return;}
   
   tb.innerHTML=visible.map((o, idx)=>{
     const montoTotal = (o.precio && o.cantidad) ? Math.round(o.precio * o.cantidad) : null;
@@ -3536,12 +3672,34 @@ function renderOrdenes(data) {
       : 'Doble click para editar';
     
     // Si es la última de un grupo, agregamos una fila separadora vacía después
+    const colspanSep = MODO_SELECCION ? 15 : 14;
     const separadorTr = esUltimaDelGrupo 
-      ? '</tr><tr aria-hidden="true"><td colspan="14" style="height:8px;padding:0;background:transparent;border:none"></td>'
+      ? `</tr><tr aria-hidden="true"><td colspan="${colspanSep}" style="height:8px;padding:0;background:transparent;border:none"></td>`
       : '';
     
-    return `<tr ondblclick="abrirEditorOperacion('ordenes',${o.id})" style="${rowStyle}" title="${tooltipTxt}">
-    <td style="white-space:nowrap">${letraBadge}<span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
+    // Checkbox de selección (solo si modo selección está activo)
+    const isSel = SELECCIONADAS.has(o.id);
+    const checkboxCell = MODO_SELECCION 
+      ? `<td onclick="event.stopPropagation();toggleSeleccionFila(${o.id},${idx},event)" style="text-align:center;cursor:pointer;background:${isSel?'rgba(0,229,150,0.12)':'transparent'}">
+          <input type="checkbox" ${isSel?'checked':''} onclick="event.stopPropagation();toggleSeleccionFila(${o.id},${idx},event)" 
+            style="cursor:pointer;accent-color:var(--accent);width:14px;height:14px"
+            title="Click: toggle · Shift+click: rango">
+        </td>`
+      : '';
+    
+    // En modo selección, click simple selecciona; sino, doble click abre editor
+    const rowClick = MODO_SELECCION 
+      ? `onclick="toggleSeleccionFila(${o.id},${idx},event)"`
+      : `ondblclick="abrirEditorOperacion('ordenes',${o.id})"`;
+    
+    // Resaltar fila si está seleccionada
+    let finalRowStyle = rowStyle;
+    if (MODO_SELECCION && isSel) {
+      finalRowStyle += 'background:rgba(0,229,150,0.08);';
+    }
+    
+    return `<tr ${rowClick} style="${finalRowStyle}" title="${MODO_SELECCION?'Click para seleccionar · Shift+click rango':tooltipTxt}">
+    ${checkboxCell}<td style="white-space:nowrap">${letraBadge}<span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
     <td class="mono" style="font-weight:600">${o.nemo||'—'}</td>
     <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis">${o.cliente}</td>
     <td class="mono">${o.rut}</td>
