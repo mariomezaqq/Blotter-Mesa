@@ -759,6 +759,10 @@ tr:hover td{background:var(--surface2)}
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12V6l6-4 6 4v6"/><rect x="6" y="8" width="4" height="4"/></svg>
         Saldos
       </div>
+      <div class="nav-item" onclick="showSection('abonos',this)" id="nav-abonos">
+        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 10h12M8 4v6m-3-3l3 3 3-3"/><rect x="1" y="2" width="14" height="12" rx="1.5"/></svg>
+        Abonos
+      </div>
       <div class="nav-section">Análisis</div>
       <div class="nav-item" onclick="showSection('resumenes',this)" id="nav-resumenes">
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,12 5,7 8,9 11,4 14,6"/><line x1="2" y1="14" x2="14" y2="14"/></svg>
@@ -1022,6 +1026,27 @@ tr:hover td{background:var(--surface2)}
               <table>
                 <thead><tr><th>RUT</th><th>Cta</th><th>Razón Social</th><th>Agente</th><th>Tipo</th><th class="right">Saldo</th><th>Instrucción</th><th></th></tr></thead>
                 <tbody id="tb-s"><tr><td colspan="8" class="empty">Sin saldos cargados</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── ABONOS (depósitos) ── -->
+        <div id="sec-abonos" class="section">
+          <div class="table-wrap">
+            <div id="filtro-bar-ab"></div>
+            <div class="table-toolbar">
+              <input class="table-search" placeholder="Buscar..." oninput="filtrar('tb-ab',this.value)">
+              <span style="font-size:10px;color:var(--text2);font-family:var(--mono);margin-left:auto" id="ab-count">0 abonos</span>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr>
+                  <th>Fecha</th><th>Cliente</th><th>RUT</th><th>Cta</th><th>Corredora</th>
+                  <th class="right">Monto</th><th>Medio</th><th>Banco origen</th>
+                  <th>Observaciones</th><th>Ejecutó</th><th>✉</th><th></th>
+                </tr></thead>
+                <tbody id="tb-ab"><tr><td colspan="12" class="empty">Sin abonos registrados</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -2686,8 +2711,10 @@ async function loadBanqueros() {
 // Caches y filtros de email_estado
 let ORDENES_CACHE = [];
 let APORTES_CACHE = [];
+let ABONOS_CACHE = [];
 let FILTRO_EMAIL_ORD = 'todas';  // todas | pendiente | enviado | fallo
 let FILTRO_EMAIL_APO = 'todas';
+let FILTRO_EMAIL_AB  = 'todas';
 
 async function cargarOrdenes() {
   const { data } = await SB.from('ordenes').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
@@ -2704,6 +2731,52 @@ async function cargarAportes() {
 async function cargarSaldos() {
   const { data } = await SB.from('saldos').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
   renderSaldos(data||[]);
+}
+async function cargarAbonos() {
+  const { data } = await SB.from('abonos').select('*').order('id',{ascending:false});
+  ABONOS_CACHE = data || [];
+  renderAbonos(ABONOS_CACHE);
+}
+
+function setFiltroAbonos(f) {
+  FILTRO_EMAIL_AB = f;
+  renderAbonos(ABONOS_CACHE);
+}
+
+function renderAbonos(data) {
+  document.getElementById('ab-count').textContent = data.length + ' abonos';
+  
+  // Filter bar
+  const cuentas = contadoresEmail(data);
+  const filtroBarHost = document.getElementById('filtro-bar-ab');
+  if (filtroBarHost) {
+    filtroBarHost.innerHTML = filtroEmailBar(cuentas, FILTRO_EMAIL_AB, 'setFiltroAbonos');
+  }
+  
+  const visible = aplicarFiltroEmail(data, FILTRO_EMAIL_AB, 'abonos');
+  
+  const tb = document.getElementById('tb-ab');
+  if (!visible.length) {
+    tb.innerHTML = `<tr><td colspan="12" class="empty">${data.length?'Sin abonos con este filtro':'Sin abonos registrados'}</td></tr>`;
+    return;
+  }
+  tb.innerHTML = visible.map(a => {
+    const fechaCorta = a.fecha ? a.fecha.split('-').reverse().join('/') : '—';
+    return `<tr ondblclick="abrirEditorOperacion('abonos',${a.id})" style="cursor:pointer" title="Doble click para editar">
+      <td class="mono" style="font-size:11px">${fechaCorta}</td>
+      <td>${a.cliente||'—'}</td>
+      <td class="mono">${a.rut||'—'}</td>
+      <td class="mono">${a.cta||'—'}</td>
+      <td class="mono">${a.corredora||'—'}</td>
+      <td class="right mono" style="font-weight:600;color:var(--accent)">${a.monto?'$'+Number(a.monto).toLocaleString('es-CL'):'—'}</td>
+      <td style="font-size:11px">${a.medio||'—'}</td>
+      <td style="font-size:11px">${a.banco_origen||'—'}</td>
+      <td style="font-size:10px;color:var(--text2);max-width:150px;overflow:hidden;text-overflow:ellipsis">${a.observaciones||'—'}</td>
+      <td><span class="executor-tag">${a.ejecutado_por||'—'}</span></td>
+      <td style="text-align:center" onclick="event.stopPropagation()">${emailBadgeHtml(a,'abonos')}</td>
+      <td onclick="event.stopPropagation()"><button class="btn sm danger" onclick="eliminar('abonos',${a.id},'tb-ab')">✕</button></td>
+    </tr>`;
+  }).join('');
 }
 async function cargarConfigSupabase() {
   const { data } = await SB.from('config').select('*');
@@ -2733,7 +2806,7 @@ async function cargarConfigSupabase() {
 // ═══════════════════════════════════════════════════════════
 // NAV
 // ═══════════════════════════════════════════════════════════
-const TITLES={ordenes:'Órdenes del día',aportes:'Aportes / Rescates',saldos:'Saldos',clientes:'Base de clientes',banqueros:'Banqueros',resumenes:'Resúmenes del día',pulso:'Pulso VCC',config:'Configuración'};
+const TITLES={ordenes:'Órdenes del día',aportes:'Aportes / Rescates',saldos:'Saldos',abonos:'Abonos',clientes:'Base de clientes',banqueros:'Banqueros',resumenes:'Resúmenes del día',pulso:'Pulso VCC',config:'Configuración'};
 async function showSection(name, el) {
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -2750,6 +2823,7 @@ async function showSection(name, el) {
   else if(name==='resumenes') await cargarResumenes();
   else if(name==='aportes') await cargarAportes();
   else if(name==='saldos') await cargarSaldos();
+  else if(name==='abonos') await cargarAbonos();
   else if(name==='clientes') renderClientes();
   else if(name==='banqueros') {
     await loadBanqueros();
@@ -4184,6 +4258,10 @@ function handleChatInput(text) {
     case 'await_corredora_bloque':
       handleCorredoraBloque(text.trim());
       return;
+    
+    case 'await_missing_abono':
+      handleMissingAbono(text.trim());
+      return;
 
     default:
       showTyping();
@@ -4734,6 +4812,7 @@ function processCommand(text) {
   }
   
   if (/\b(SALDO|BALANCE|DISPONIBLE)\b/i.test(text)) { parseSaldo(text); return; }
+  if (/\b(ABONO|ABONA|ABONÉ|ABONAR|DEPOSITO|DEPÓSITO|DEPOSITA|DEPOSITÉ|DEPOSITAR)\b/i.test(text)) { parseAbono(text); return; }
   if (/\b(APORTE|APORTA[RS]?|APORTO|APORTÓ|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
   if (/\b(RESCATE|RESCATAR)\b/i.test(text)) { parseAporte(text,'Rescate'); return; }
   if (/\b(TRANSFERENCIA)\b/i.test(text)) { parseAporte(text,'Transferencia'); return; }
@@ -5576,8 +5655,241 @@ function handleCtaCruce(text) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PARSE APORTE
+// PARSER DE ABONOS (depósitos que llegan a una cuenta)
 // ═══════════════════════════════════════════════════════════
+// Ejemplos:
+//   "abona 500mil a Mario Meza cta 1234 transferencia banco chile"
+//   "abono 2 palos a Juan Perez 12345678-9 cuenta 5678 cheque banco santander"
+//   "deposito 3 millones a Pedro via vale vista santander"
+function parseAbono(text) {
+  // ── Monto ────────────────────────────────────────────────────
+  const montoM = text.match(/(\d[\d.,]*)\s*(palos?|millones?|mm?\b|lucas?|mil)/i);
+  let monto = null;
+  if (montoM) monto = parseMontoNatural(montoM[0]);
+  else {
+    const n = text.match(/\b(\d[\d.,]{3,})\b/);
+    if (n) monto = parseMontoNatural(n[1]);
+  }
+  
+  // ── Cuenta ───────────────────────────────────────────────────
+  let cta = '';
+  const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
+  if (ctaM) cta = ctaM[1];
+  
+  // ── Medio de pago ────────────────────────────────────────────
+  let medio = '';
+  if (/transferencia\s+bancaria|trans\.?\s+banc/i.test(text))     medio = 'Transferencia bancaria';
+  else if (/\btransferencia\b/i.test(text))                       medio = 'Transferencia bancaria';
+  else if (/\bcheque\b/i.test(text))                              medio = 'Cheque';
+  else if (/vale\s*vista|valevista/i.test(text))                  medio = 'Vale vista';
+  else if (/\befectivo\b/i.test(text))                            medio = 'Efectivo';
+  else if (/\bcargo\s+(?:en\s+)?(?:cuenta|cta)/i.test(text))      medio = 'Cargo en cuenta';
+  
+  // ── Banco origen ─────────────────────────────────────────────
+  let bancoOrigen = '';
+  const bancoM = text.match(/banco\s+([A-Za-zÁÉÍÓÚáéíóú]+(?:\s+[A-Za-zÁÉÍÓÚáéíóú]+){0,2})/i);
+  if (bancoM) {
+    const raw = bancoM[1].trim();
+    bancoOrigen = 'Banco ' + raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+  } else {
+    const bancos = ['santander','chile','bci','itau','itaú','scotiabank','security','falabella','ripley','consorcio'];
+    for (const b of bancos) {
+      const re = new RegExp(`\\b${b}\\b`, 'i');
+      if (re.test(text)) {
+        bancoOrigen = 'Banco ' + b.charAt(0).toUpperCase() + b.slice(1);
+        break;
+      }
+    }
+  }
+  
+  // ── Corredora destino (opcional) ─────────────────────────────
+  let corredora = '';
+  const corrM = text.match(/(?:por|v[ií]a|corredora)\s+(LV|MBI|BTG|SMB|BCI|BICE|ITAU|SANTANDER|CREDICORP|SECURITY|VALUES|RENTA4|LARRAIN|LC)\b/i);
+  if (corrM) corredora = corrM[1].toUpperCase();
+  
+  // ── Cliente ──────────────────────────────────────────────────
+  const clientResult = resolveCliente(text);
+  
+  const parsed = {
+    type:'abono',
+    monto, cta, medio, banco_origen: bancoOrigen, corredora,
+    cliente: clientResult?.nombre || '',
+    rut:     clientResult?.rut    || '',
+    clienteResult: clientResult,
+    observaciones: '',
+    ccBanqueros: window._pendingCCBanqueros || null
+  };
+  window._pendingCCBanqueros = null;
+  
+  if (!clientResult || clientResult.unknown) {
+    const name = clientResult?.nombre || extractNameCandidate(text) || '';
+    parsed.cliente = name;
+    chatContext = {state:'await_new_client_confirm', parsed};
+    const msgTxt = clientResult?.rut
+      ? `RUT <strong>${clientResult.rut}</strong> no está registrado. ¿Lo agregamos?`
+      : name ? `No encontré a <strong>${name}</strong>. ¿Es cliente nuevo?`
+             : 'No encontré al cliente. ¿Querés agregarlo?';
+    botMsg(msgTxt, buildNewClientHtml(name, clientResult?.rut||''));
+    return;
+  }
+  
+  checkMissingAbono(parsed);
+}
+
+function checkMissingAbono(parsed) {
+  if (!parsed.rut) {
+    chatContext = {state:'await_missing_abono', field:'rut', parsed};
+    botMsg(`¿Cuál es el RUT de <strong>${parsed.cliente||'el cliente'}</strong>?`);
+    return;
+  }
+  if (!parsed.monto) {
+    chatContext = {state:'await_missing_abono', field:'monto', parsed};
+    botMsg(`¿Cuál es el monto del abono? (ej: <em>500 mil</em>, <em>2 millones</em>)`);
+    return;
+  }
+  
+  // Si cliente tiene UNA cuenta, autoasignar; si varias, preguntar; si ninguna, pedir a mano
+  if (!parsed.cta && parsed.clienteResult?.cliente) {
+    const cuentas = parsed.clienteResult.cliente.cuentas || [];
+    if (cuentas.length === 1) {
+      parsed.cta = cuentas[0].cta;
+      if (!parsed.corredora && cuentas[0].corredora) parsed.corredora = cuentas[0].corredora;
+    } else if (cuentas.length > 1) {
+      chatContext = {state:'await_cta_abono_pick', parsed};
+      const opts = cuentas.map(cu =>
+        `<button class="alias-opt" onclick="selectCtaAbonoBtn('${cu.cta}','${cu.corredora||''}')">Cta. ${cu.cta}${cu.corredora?' · '+cu.corredora:''}</button>`
+      ).join('');
+      botMsg(`¿A qué cuenta es el abono?`,
+        `<div class="alias-suggestion" style="margin-top:6px">
+          <div class="alias-sug-title">Seleccioná la cuenta</div>
+          <div class="alias-sug-opts">${opts}</div>
+        </div>`);
+      return;
+    }
+  }
+  
+  // Medio: si no detecté, preguntar con botones
+  if (!parsed.medio) {
+    chatContext = {state:'await_medio_abono', parsed};
+    botMsg(`¿Cuál es el medio del abono?`,
+      `<div class="alias-suggestion" style="margin-top:6px">
+        <div class="alias-sug-title">Seleccioná el medio</div>
+        <div class="alias-sug-opts">
+          <button class="alias-opt" onclick="selectMedioAbonoBtn('Transferencia bancaria')">Transferencia</button>
+          <button class="alias-opt" onclick="selectMedioAbonoBtn('Cheque')">Cheque</button>
+          <button class="alias-opt" onclick="selectMedioAbonoBtn('Vale vista')">Vale vista</button>
+          <button class="alias-opt" onclick="selectMedioAbonoBtn('Efectivo')">Efectivo</button>
+          <button class="alias-opt" onclick="selectMedioAbonoBtn('Cargo en cuenta')">Cargo en cuenta</button>
+        </div>
+      </div>`);
+    return;
+  }
+  
+  pendingOrder = parsed;
+  chatContext  = {state:'await_confirm'};
+  showAbonoConfirm(parsed);
+}
+
+function selectCtaAbonoBtn(cta, corr) {
+  if (!chatContext?.parsed) return;
+  chatContext.parsed.cta = cta;
+  if (corr && !chatContext.parsed.corredora) chatContext.parsed.corredora = corr;
+  botMsg(`✓ Cuenta: <strong>${cta}</strong>${corr?' ('+corr+')':''}`);
+  const p = chatContext.parsed;
+  chatContext = null;
+  checkMissingAbono(p);
+}
+
+function selectMedioAbonoBtn(medio) {
+  if (!chatContext?.parsed) return;
+  chatContext.parsed.medio = medio;
+  botMsg(`✓ Medio: <strong>${medio}</strong>`);
+  const p = chatContext.parsed;
+  chatContext = null;
+  checkMissingAbono(p);
+}
+
+function handleMissingAbono(text) {
+  if (!chatContext?.parsed) return;
+  const {field, parsed} = chatContext;
+  if (field === 'rut') {
+    const rutClean = text.replace(/\./g,'').replace(/\s/g,'');
+    parsed.rut = rutClean;
+    botMsg(`✓ RUT: <strong>${rutClean}</strong>`);
+  } else if (field === 'nombre') {
+    parsed.cliente = text;
+    botMsg(`✓ Cliente: <strong>${text}</strong>`);
+  } else if (field === 'monto') {
+    const m = parseMontoNatural(text);
+    if (!m || m <= 0) {
+      botMsg('⚠ No entendí el monto. Ejemplo: <em>500 mil</em>, <em>2 millones</em>, <em>1500000</em>');
+      return;
+    }
+    parsed.monto = m;
+    botMsg(`✓ Monto: <strong>$${m.toLocaleString('es-CL')}</strong>`);
+  }
+  chatContext = null;
+  checkMissingAbono(parsed);
+}
+
+function showAbonoConfirm(p) {
+  const rows = [
+    ['Cliente', p.cliente],
+    ['RUT', p.rut],
+    ['Cuenta', p.cta || '(sin cuenta)'],
+    ['Corredora', p.corredora || '(no especificada)'],
+    ['Monto', '$' + Number(p.monto).toLocaleString('es-CL')],
+    ['Medio', p.medio],
+    ['Banco origen', p.banco_origen || '(no especificado)']
+  ];
+  
+  const html = `<div class="chat-confirm">
+    <div class="chat-confirm-title" style="color:var(--accent)">// ABONO</div>
+    ${rows.map(([k,v])=>`
+      <div class="chat-confirm-row">
+        <span class="chat-confirm-key">${k}</span>
+        <span class="chat-confirm-val mono">${v}</span>
+      </div>`).join('')}
+    <div class="chat-confirm-actions">
+      <button class="chat-confirm-btn confirm" onclick="handleChatInput('si')">✓ Confirmar abono</button>
+      <button class="chat-confirm-btn cancel"  onclick="handleChatInput('no')">✕ Cancelar</button>
+    </div>
+  </div>`;
+  
+  botMsg('¿Confirmar este abono?', html);
+}
+
+// Guarda el abono en BD. Se llama desde el dispatch de 'si' en await_confirm.
+async function guardarAbono(p) {
+  const executor = CURRENT_USER?.nombre || 'Sistema';
+  const row = {
+    fecha: todayStr(),
+    rut: p.rut,
+    cliente: p.cliente,
+    cta: p.cta || '',
+    corredora: p.corredora || '',
+    monto: p.monto || null,
+    medio: p.medio || '',
+    banco_origen: p.banco_origen || '',
+    observaciones: p.observaciones || '',
+    ejecutado_por: executor,
+    email_enviado: false,
+    email_estado: 'pendiente'
+  };
+  
+  const {data, error} = await SB.from('abonos').insert(row).select().single();
+  if (error) {
+    botMsg('❌ Error guardando abono: ' + error.message);
+    return;
+  }
+  
+  botMsg(`✅ Abono guardado · 🕓 email pendiente (próximo turno: notificación al banquero)`);
+  
+  if (isActive('abonos')) await cargarAbonos();
+  else showSection('abonos', document.getElementById('nav-abonos'));
+}
+
+
 function parseAporte(text, forceInstruccion) {
   let instruccion = forceInstruccion || 'Aporte';
   if (!forceInstruccion) {
@@ -7181,6 +7493,8 @@ async function confirmarPendingOrder() {
     if (error) { botMsg(`❌ Error: ${error.message}`); return; }
     botMsg(`✅ Saldo guardado`);
     if (isActive('saldos')) await cargarSaldos();
+  } else if (p.type === 'abono') {
+    await guardarAbono(p);
   }
 }
 
