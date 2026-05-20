@@ -3472,16 +3472,32 @@ function renderOrdenes(data) {
     const montoTotal = (o.precio && o.cantidad) ? Math.round(o.precio * o.cantidad) : null;
     const esGrupo = o.letra_op && conteoLetras[o.letra_op] > 1;
     
-    // Si pertenece a un grupo, badge azul prominente; si es individual, badge sutil
+    // Detectar posición dentro del grupo: primera, medio, última
+    const prevO = idx > 0 ? visible[idx-1] : null;
+    const nextO = idx < visible.length-1 ? visible[idx+1] : null;
+    const mismaLetraAnt = esGrupo && prevO && prevO.letra_op === o.letra_op;
+    const mismaLetraDsp = esGrupo && nextO && nextO.letra_op === o.letra_op;
+    const esPrimeraDelGrupo = esGrupo && !mismaLetraAnt;
+    const esUltimaDelGrupo = esGrupo && !mismaLetraDsp;
+    
+    // Si pertenece a un grupo, badge prominente; si es individual, badge sutil
     let letraBadge = '';
     if (o.letra_op) {
-      if (esGrupo) {
-        // Badge prominente con borde y color de grupo (verde acento)
+      if (esGrupo && esPrimeraDelGrupo) {
+        // Solo la primera fila del grupo muestra el badge con el ícono ⛓
         letraBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;
-          background:rgba(0,229,150,0.15);color:var(--accent);border:1px solid var(--accent);
-          border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;font-family:var(--mono);
-          margin-right:6px;letter-spacing:.5px" title="Orden agrupada ${o.letra_op} · ${conteoLetras[o.letra_op]} legs">
+          background:rgba(0,229,150,0.18);color:var(--accent);border:1px solid var(--accent);
+          border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700;font-family:var(--mono);
+          margin-right:6px;letter-spacing:.5px" title="Orden ${o.letra_op} · ${conteoLetras[o.letra_op]} legs">
           ⛓ ${o.letra_op}
+        </span>`;
+      } else if (esGrupo) {
+        // Filas del medio/última: badge más sutil que continúa la idea
+        letraBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;
+          background:rgba(0,229,150,0.08);color:var(--accent);border:1px dashed rgba(0,229,150,0.5);
+          border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;font-family:var(--mono);
+          margin-right:6px;letter-spacing:.5px;opacity:.85" title="Continuación de orden ${o.letra_op}">
+          ${o.letra_op}
         </span>`;
       } else {
         letraBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;
@@ -3491,13 +3507,40 @@ function renderOrdenes(data) {
       }
     }
     
-    // Borde lateral izquierdo verde si es grupo
-    const borderStyle = esGrupo ? 'box-shadow: inset 3px 0 0 var(--accent)' : '';
+    // ── Bordes para crear efecto "card alrededor del grupo" ──
+    // Primera fila: borde top + left + right + sombra superior
+    // Filas medio: borde left + right
+    // Última: borde left + right + bottom
+    // Espacio entre grupos: padding extra en última y primera
+    let rowStyle = 'cursor:pointer;';
+    if (esGrupo) {
+      const accentDim = 'rgba(0,229,150,0.45)';
+      if (esPrimeraDelGrupo && esUltimaDelGrupo) {
+        // Grupo de 1? No debería pasar pero por seguridad
+        rowStyle += `box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 ${accentDim}, inset 0 3px 0 ${accentDim}, inset 0 -3px 0 ${accentDim};`;
+      } else if (esPrimeraDelGrupo) {
+        // Primera: top + lateral izq verde fuerte + lateral der dim
+        rowStyle += `box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 ${accentDim}, inset 0 3px 0 ${accentDim};`;
+      } else if (esUltimaDelGrupo) {
+        // Última: bordes laterales + bottom + margen-bottom para separar del siguiente grupo
+        rowStyle += `box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 ${accentDim}, inset 0 -3px 0 ${accentDim};`;
+      } else {
+        // Medio: laterales
+        rowStyle += `box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 ${accentDim};`;
+      }
+      rowStyle += `background:rgba(0,229,150,0.02);`;
+    }
+    
     const tooltipTxt = esGrupo 
       ? `Doble click para editar grupo (${conteoLetras[o.letra_op]} legs · orden ${o.letra_op})`
       : 'Doble click para editar';
     
-    return `<tr ondblclick="abrirEditorOperacion('ordenes',${o.id})" style="cursor:pointer;${borderStyle}" title="${tooltipTxt}">
+    // Si es la última de un grupo, agregamos una fila separadora vacía después
+    const separadorTr = esUltimaDelGrupo 
+      ? '</tr><tr aria-hidden="true"><td colspan="14" style="height:8px;padding:0;background:transparent;border:none"></td>'
+      : '';
+    
+    return `<tr ondblclick="abrirEditorOperacion('ordenes',${o.id})" style="${rowStyle}" title="${tooltipTxt}">
     <td style="white-space:nowrap">${letraBadge}<span class="pill ${o.operacion==='COMPRA'?'compra':'venta'}">${o.operacion}</span></td>
     <td class="mono" style="font-weight:600">${o.nemo||'—'}</td>
     <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis">${o.cliente}</td>
@@ -3512,7 +3555,7 @@ function renderOrdenes(data) {
     <td><span class="executor-tag">${o.ejecutado_por||'—'}</span></td>
     <td style="text-align:center" onclick="event.stopPropagation()">${emailBadgeHtml(o,'ordenes')}</td>
     <td onclick="event.stopPropagation()"><button class="btn sm danger" onclick="eliminar('ordenes',${o.id},'tb-o')">✕</button></td>
-  </tr>`;}).join('');
+  ${separadorTr}</tr>`;}).join('');
 }
 function renderAportes(data) {
   document.getElementById('a-count').textContent=data.length+' registros';
