@@ -4323,7 +4323,7 @@ function tryCorrectionInline(tl, order) {
   if ((m = tl.match(/^precio\s+(.+)/i)))      { order.precio    = parseMontoNatural(m[1]); return true; }
   if ((m = tl.match(/^cantidad\s+(.+)/i)))    { order.cantidad  = parseMontoNatural(m[1]); return true; }
   if ((m = tl.match(/^corredora\s+(\w+)/i))) { order.corredora = m[1].toUpperCase(); return true; }
-  if ((m = tl.match(/^cta\.?\s+(\d+)/i)))   { order.cta       = m[1]; return true; }
+  if ((m = tl.match(/^(?:cta\.?|cuenta|sec(?:uencia)?)\s+(\d+)/i)))   { order.cta       = m[1]; return true; }
   if ((m = tl.match(/^nemo\s+(\S+)/i)))      { order.nemo = m[1].toUpperCase(); order.nemoResult={resolved:m[1].toUpperCase(),exact:true}; return true; }
   if ((m = tl.match(/^rut\s+([\d\-kK]+)/i))){ order.rut       = formatRut(m[1]); return true; }
   return false;
@@ -4426,7 +4426,7 @@ function extractCantidadYPrecio(text) {
 
   // Step 1: mask non-financial numbers so they don't bleed into parsing
   let t = text
-    .replace(/(?:cta\.?|cuenta)\s*[:\.]?\s*\d+/ig, 'CUENTANUM')  // "cuenta 1"
+    .replace(/(?:cta\.?|cuenta|sec(?:uencia)?)\s*[:\.]?\s*\d+/ig, 'CUENTANUM')  // "cuenta 1"
     .replace(/\b\d{7,9}-?[\dKk]\b/g, 'RUTNUM')                    // RUTs
     .replace(/\b(deuda|total|serie|plazo|fijo|variable|lv|lc|vp)\b/ig, ''); // descriptors
 
@@ -4965,7 +4965,7 @@ function parseOrden(text, forceOp) {
   }
 
   let cta = '';
-  const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
+  const ctaM = text.match(/(?:cta\.?|cuenta|sec(?:uencia)?)\s*[:\.]?\s*(\d+)/i);
   if (ctaM) cta = ctaM[1];
 
   // Strip typo connectors: "e", "y" before nemo (e.g. "palos e LTM" → "palos LTM")
@@ -5082,24 +5082,57 @@ function checkMissingAndConfirm(parsed) {
     return;
   }
 
-  // Cuenta obligatoria para órdenes
+  // ─── CUENTA + CORREDORA para órdenes ────────────────────────
+  // Regla: la cuenta determina la corredora.
+  // - Si banquero ya dijo corredora en el texto → filtramos cuentas a esa corredora
+  // - Si cliente tiene UNA cuenta en esa corredora → autoasignar
+  // - Si tiene varias → mostrar opciones (con corredora visible)
+  // - Si no tiene ninguna → pedir cuenta a mano
   if (parsed.type === 'orden' && !parsed.cta) {
-    // Si el cliente tiene solo una cuenta, auto-fill
-    if (parsed.clienteResult?.cliente?.cuentas?.length === 1) {
-      parsed.cta = parsed.clienteResult.cliente.cuentas[0].cta;
-      if (!parsed.corredora && parsed.clienteResult.cliente.cuentas[0].corredora)
-        parsed.corredora = parsed.clienteResult.cliente.cuentas[0].corredora;
-    } else if (parsed.clienteResult?.cliente?.cuentas?.length > 1) {
-      // Múltiples cuentas → ya se pregunta en await_cuenta_select
+    const cuentasTodas = parsed.clienteResult?.cliente?.cuentas || [];
+    const corrPedida = (parsed.corredora||'').toUpperCase().trim();
+    
+    // Filtrar por corredora si el banquero la indicó
+    let cuentasDisp = cuentasTodas;
+    if (corrPedida) {
+      const filtradas = cuentasTodas.filter(cu => (cu.corredora||'').toUpperCase().trim() === corrPedida);
+      // Si encontró cuentas en esa corredora, usamos solo esas
+      if (filtradas.length) cuentasDisp = filtradas;
+    }
+    
+    if (cuentasDisp.length === 1) {
+      // Autoasignar (cuenta + corredora)
+      parsed.cta = cuentasDisp[0].cta;
+      if (!parsed.corredora && cuentasDisp[0].corredora) parsed.corredora = cuentasDisp[0].corredora;
+    } else if (cuentasDisp.length > 1) {
+      // Múltiples opciones → preguntar cuenta (con corredora visible)
+      chatContext = {state:'await_cuenta_select', parsed};
+      const opts = cuentasDisp.map(cu =>
+        `<button class="alias-opt" onclick="selectCuentaBtn('${cu.cta}','${cu.corredora||''}')">`+
+        `Cta. ${cu.cta}${cu.corredora ? ' · '+cu.corredora : ''}</button>`
+      ).join('');
+      const cabecera = corrPedida 
+        ? `<strong>${parsed.cliente}</strong> tiene ${cuentasDisp.length} cuentas en <strong>${corrPedida}</strong>. ¿Cuál?`
+        : `<strong>${parsed.cliente}</strong> tiene ${cuentasDisp.length} cuentas. ¿Cuál usamos?`;
+      botMsg(cabecera,
+        `<div class="alias-suggestion" style="margin-top:6px">
+          <div class="alias-sug-title">Seleccioná la cuenta</div>
+          <div class="alias-sug-opts">${opts}</div>
+        </div>`);
+      return;
     } else {
-      // No tiene cuentas registradas o es cliente nuevo → preguntar
+      // Sin cuentas (cliente nuevo o sin cuenta en corredora pedida)
+      // Pedir la cuenta a mano. Después se deriva o pregunta la corredora.
       chatContext = {state:'await_missing_field', field:'cta', parsed};
-      botMsg(`¿Cuál es el número de cuenta de <strong>${parsed.cliente||'el cliente'}</strong>?`);
+      const msgExtra = corrPedida && cuentasTodas.length
+        ? `<br><span style="font-size:10px;color:var(--text2)">Cuentas en otras corredoras: ${cuentasTodas.map(c=>'Cta.'+c.cta+(c.corredora?' ('+c.corredora+')':'')).join(', ')}</span>`
+        : '';
+      botMsg(`<strong>${parsed.cliente}</strong> no tiene cuenta${corrPedida?' en '+corrPedida:' registrada'}. ¿Cuál es el número? (ej: <em>0</em>, <em>1</em>, <em>55</em>)${msgExtra}`);
       return;
     }
   }
 
-  // Corredora obligatoria para órdenes
+  // Corredora obligatoria para órdenes (si llegamos acá sin corredora)
   if (parsed.type === 'orden' && !parsed.corredora) {
     chatContext = {state:'await_missing_field', field:'corredora', parsed};
     botMsg('¿Por qué corredora va la orden? (ej: <em>MBI</em>, <em>LV</em>, <em>BTG</em>)');
@@ -5128,29 +5161,6 @@ function checkMissingAndConfirm(parsed) {
         </div>
       </div>`);
     return;
-  }
-
-  // If client has multiple accounts and none specified → ask
-  if (!parsed.cta && parsed.clienteResult?.cliente) {
-    const cuentas = parsed.clienteResult.cliente.cuentas || [];
-    if (cuentas.length > 1) {
-      chatContext = {state:'await_cuenta_select', parsed};
-      const opts = cuentas.map(cu =>
-        `<button class="alias-opt" onclick="selectCuentaBtn('${cu.cta}','${cu.corredora||''}')">`+
-        `Cta. ${cu.cta}${cu.corredora ? ' · '+cu.corredora : ''}</button>`
-      ).join('');
-      botMsg(`<strong>${parsed.cliente}</strong> tiene ${cuentas.length} cuentas. ¿Cuál usamos?`,
-        `<div class="alias-suggestion" style="margin-top:6px">
-          <div class="alias-sug-title">Seleccioná la cuenta</div>
-          <div class="alias-sug-opts">${opts}</div>
-        </div>`);
-      return;
-    }
-    // Single account → auto-fill
-    if (cuentas.length === 1) {
-      parsed.cta = cuentas[0].cta;
-      if (!parsed.corredora && cuentas[0].corredora) parsed.corredora = cuentas[0].corredora;
-    }
   }
 
   // ── Auto-completar cantidad/precio si tenemos monto + uno de los dos ──
@@ -5279,7 +5289,29 @@ function handleMissingAporte(text) {
     case 'nombre':  parsed.cliente  = text.trim().toUpperCase(); break;
     case 'monto':   parsed.monto    = parseMontoNatural(text); break;
     case 'fondo':   parsed.fondo    = text.trim().toUpperCase(); break;
-    case 'cta':     parsed.cta      = text.trim(); break;
+    case 'cta': {
+      parsed.cta = text.trim();
+      // Si no hay corredora, preguntarla a mano
+      if (!parsed.corredora) {
+        chatContext = {state:'await_missing_aporte', field:'corredora', parsed};
+        botMsg(`¿Por qué corredora va el ${parsed.instruccion.toLowerCase()}? (ej: <em>LV</em>, <em>MBI</em>, <em>BTG</em>)`);
+        return;
+      }
+      break;
+    }
+    case 'corredora': {
+      const corr = text.trim().toUpperCase();
+      if (!/^[A-Z0-9]{2,15}$/.test(corr)) {
+        botMsg('⚠ Corredora inválida. Escribí solo el código (ej: <em>LV</em>, <em>MBI</em>).');
+        return;
+      }
+      parsed.corredora = corr;
+      // Persistir esta nueva cuenta+corredora al cliente para próxima vez
+      if (parsed.rut && parsed.cliente && parsed.cta) {
+        autoGuardarCliente(parsed.rut, parsed.cliente, parsed.cta, corr).catch(()=>{});
+      }
+      break;
+    }
   }
   chatContext = null;
   checkMissingAporte(parsed);
@@ -5317,18 +5349,14 @@ function selectCondicionBtn(cond) {
 function selectCuentaBtn(cta, corredora) {
   if (!chatContext?.parsed) return;
   chatContext.parsed.cta = cta;
-  if (corredora && !chatContext.parsed.corredora) chatContext.parsed.corredora = corredora;
+  // La cuenta determina la corredora: si la cuenta tiene corredora asociada, siempre se setea
+  // (sobrescribe lo que hubiera, porque la fuente de verdad es la cuenta elegida)
+  if (corredora) chatContext.parsed.corredora = corredora;
   const p = chatContext.parsed;
   chatContext = null;
-  // Check if still missing rut
-  if (!p.rut) {
-    chatContext = {state:'await_missing_field', field:'rut', parsed:p};
-    botMsg(`¿Cuál es el RUT de <strong>${p.cliente}</strong>?`);
-    return;
-  }
-  pendingOrder = p;
-  chatContext = {state:'await_confirm'};
-  showParsedConfirm(p);
+  botMsg(`✓ Cuenta <strong>${cta}</strong>${corredora?` (corredora <strong>${corredora}</strong>)`:''}`);
+  // Volver al check para preguntar lo que falte (condición, precio, etc.)
+  checkMissingAndConfirm(p);
 }
 
 function handleNemoClarify(text) {
@@ -5539,8 +5567,29 @@ function handleMissingField(text) {
       }
       break;
     }
-    case 'cta':       parsed.cta      = text.trim(); break;
-    case 'corredora': parsed.corredora = text.trim().toUpperCase(); break;
+    case 'cta': {
+      parsed.cta = text.trim();
+      // Si la cuenta llega a mano y todavía no hay corredora, después se preguntará
+      // (checkMissingAndConfirm/continuarFlujoCruce maneja el flujo)
+      // Si ya hay corredora, persistir esta cuenta+corredora al cliente para próxima vez
+      if (parsed.rut && parsed.cliente && parsed.cta && parsed.corredora) {
+        autoGuardarCliente(parsed.rut, parsed.cliente, parsed.cta, parsed.corredora).catch(()=>{});
+      }
+      break;
+    }
+    case 'corredora': {
+      const corr = text.trim().toUpperCase();
+      if (!/^[A-Z0-9]{2,15}$/.test(corr)) {
+        botMsg('⚠ Corredora inválida. Escribí solo el código (ej: <em>LV</em>, <em>MBI</em>).');
+        return;
+      }
+      parsed.corredora = corr;
+      // Si ya hay cuenta, persistir la combinación
+      if (parsed.rut && parsed.cliente && parsed.cta) {
+        autoGuardarCliente(parsed.rut, parsed.cliente, parsed.cta, corr).catch(()=>{});
+      }
+      break;
+    }
     case 'condicion': {
       const up = text.trim().toUpperCase();
       if (['PH','PM','CN'].includes(up)) parsed.condicion = up;
@@ -5749,7 +5798,7 @@ function parseAbono(text) {
   
   // ── Cuenta ───────────────────────────────────────────────────
   let cta = '';
-  const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
+  const ctaM = text.match(/(?:cta\.?|cuenta|sec(?:uencia)?)\s*[:\.]?\s*(\d+)/i);
   if (ctaM) cta = ctaM[1];
   
   // ── Medio de pago ────────────────────────────────────────────
@@ -6034,7 +6083,7 @@ function parseAporte(text, forceInstruccion) {
   
   // Cuenta
   let cta = '';
-  const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
+  const ctaM = text.match(/(?:cta\.?|cuenta|sec(?:uencia)?)\s*[:\.]?\s*(\d+)/i);
   if (ctaM) cta = ctaM[1];
 
   // ── Corredora ───────────────────────────────────────────────
@@ -6109,24 +6158,31 @@ function checkMissingAporte(parsed) {
     botMsg(`¿A qué fondo es el ${parsed.instruccion.toLowerCase()}? (ej: <em>FFMM BTG Renta Global</em>, <em>FFMM LV Ahorro Corporativo</em>)`);
     return;
   }
-  if (!parsed.cta && parsed.clienteResult?.cliente) {
-    const cuentas = parsed.clienteResult.cliente.cuentas || [];
-    if (cuentas.length > 1) {
+  // ── Cuenta obligatoria: nunca dejar pasar aporte sin cuenta ──
+  if (!parsed.cta) {
+    const cuentas = parsed.clienteResult?.cliente?.cuentas || [];
+    if (cuentas.length === 1) {
+      // Autoasignar la única
+      parsed.cta = cuentas[0].cta;
+      if (!parsed.corredora && cuentas[0].corredora) parsed.corredora = cuentas[0].corredora;
+    } else if (cuentas.length > 1) {
+      // Varias → mostrar opciones con corredora visible
       chatContext = {state:'await_cuenta_aporte', parsed};
       const opts = cuentas.map(cu =>
         `<button class="alias-opt" onclick="selectCuentaAporteBtn('${cu.cta}','${cu.corredora||''}')">`+
         `Cta. ${cu.cta}${cu.corredora?' · '+cu.corredora:''}</button>`
       ).join('');
-      botMsg(`¿Desde qué cuenta?`,
+      botMsg(`¿Desde qué cuenta es el ${parsed.instruccion.toLowerCase()}?`,
         `<div class="alias-suggestion" style="margin-top:6px">
           <div class="alias-sug-title">Seleccioná la cuenta</div>
           <div class="alias-sug-opts">${opts}</div>
         </div>`);
       return;
-    }
-    if (cuentas.length === 1) {
-      parsed.cta = cuentas[0].cta;
-      if (!parsed.corredora && cuentas[0].corredora) parsed.corredora = cuentas[0].corredora;
+    } else {
+      // Sin cuentas registradas → pedir a mano
+      chatContext = {state:'await_missing_aporte', field:'cta', parsed};
+      botMsg(`<strong>${parsed.cliente}</strong> no tiene cuentas registradas. ¿Cuál es el número de cuenta?`);
+      return;
     }
   }
   // ── Forma de pago: si no se especificó, preguntar ────────────────
@@ -6519,7 +6575,7 @@ function parsearOrdenSilenciosa(text, idx) {
     }
 
     let cta = '';
-    const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
+    const ctaM = text.match(/(?:cta\.?|cuenta|sec(?:uencia)?)\s*[:\.]?\s*(\d+)/i);
     if (ctaM) cta = ctaM[1];
 
     const textClean = text.replace(/\b(e|y)\s+([A-Z])/gi, '$2');
@@ -7052,7 +7108,7 @@ function showCruceConfirm(parsed) {
 function parseSaldo(text) {
   const saldo = parseMontoNatural(text.replace(/^saldo\s*/i,'')) || null;
   let cta = '';
-  const ctaM = text.match(/(?:cta\.?|cuenta)\s*[:\.]?\s*(\d+)/i);
+  const ctaM = text.match(/(?:cta\.?|cuenta|sec(?:uencia)?)\s*[:\.]?\s*(\d+)/i);
   if (ctaM) cta = ctaM[1];
   const clientResult = resolveCliente(text);
   const parsed = {type:'saldo', saldo, cta, razon:clientResult?.nombre||'', rut:clientResult?.rut||''};
