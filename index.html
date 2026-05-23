@@ -3026,6 +3026,21 @@ function cerrarEditorModal() {
   if (m) m.remove();
 }
 
+// Auto-calcula cantidad cuando se completa precio en una operación con monto
+function autoCalcCantidad() {
+  const precioEl = document.getElementById('ed-precio');
+  const cantidadEl = document.getElementById('ed-cantidad');
+  const montoEl = document.getElementById('ed-monto-orden');
+  if (!precioEl || !cantidadEl || !montoEl) return;
+  const precio = parseFloat(precioEl.value) || 0;
+  const monto = parseFloat(montoEl.value) || 0;
+  const cantidadActual = parseFloat(cantidadEl.value) || 0;
+  // Solo auto-calcular si hay monto, precio > 0, y NO había cantidad previa
+  if (precio > 0 && monto > 0 && cantidadActual === 0) {
+    cantidadEl.value = Math.round(monto / precio);
+  }
+}
+
 function renderEditorModal() {
   // Solo remover el DOM previo, NO el contexto
   const prev = document.getElementById('editor-modal');
@@ -3153,7 +3168,8 @@ function renderEditorModal() {
         <div class="field"><label>RUT</label><input id="ed-rut" type="text" value="${row.rut||''}"></div>
         <div class="field"><label>Cuenta</label><input id="ed-cta" type="text" value="${row.cta||''}"></div>
         <div class="field"><label>Cantidad</label><input id="ed-cantidad" type="number" value="${row.cantidad||''}"></div>
-        <div class="field"><label>Precio</label><input id="ed-precio" type="number" step="0.01" value="${row.precio||''}"></div>
+        <div class="field"><label>Precio</label><input id="ed-precio" type="number" step="0.01" value="${row.precio||''}" oninput="autoCalcCantidad()"></div>
+        <div class="field"><label>Monto (P×Q)</label><input id="ed-monto-orden" type="number" value="${row.monto||''}" placeholder="opcional"></div>
         <div class="field"><label>Condición</label>
           <select id="ed-condicion">
             <option value=""${!row.condicion?' selected':''}>—</option>
@@ -3171,6 +3187,9 @@ function renderEditorModal() {
         </div>
         <div class="field"><label>Letra</label><input type="text" value="${row.letra_op||''}" disabled style="opacity:.6"></div>
       </div>
+      ${(!row.precio || !row.cantidad) ? `<div style="margin-top:10px;padding:8px 12px;background:rgba(255,193,7,0.1);border:1px solid var(--warn);border-radius:6px;font-size:11px;color:var(--warn)">
+        ⚠ Operación pendiente · ${!row.precio?'completá el <strong>precio</strong>':''}${!row.precio&&!row.cantidad?' y la <strong>cantidad</strong>':''}${row.precio&&!row.cantidad?'completá la <strong>cantidad</strong>':''} antes de enviar el email
+      </div>`:''}
     `;
   } else {
     // Aporte individual
@@ -3279,6 +3298,11 @@ function leerEditorFields() {
   
   // Individual
   if (tabla === 'ordenes') {
+    const cantidad = parseFloat(document.getElementById('ed-cantidad').value) || null;
+    const precio = parseFloat(document.getElementById('ed-precio').value) || null;
+    let monto = parseFloat(document.getElementById('ed-monto-orden')?.value) || null;
+    // Si tenemos precio + cantidad, recalcular monto (consistencia)
+    if (precio && cantidad) monto = Math.round(precio * cantidad);
     return {isGrupo: false, updates: {
       operacion: document.getElementById('ed-operacion').value,
       nemo: document.getElementById('ed-nemo').value.trim().toUpperCase(),
@@ -3286,8 +3310,9 @@ function leerEditorFields() {
       cliente: document.getElementById('ed-cliente').value.trim(),
       rut: document.getElementById('ed-rut').value.trim(),
       cta: document.getElementById('ed-cta').value.trim(),
-      cantidad: parseFloat(document.getElementById('ed-cantidad').value) || null,
-      precio: parseFloat(document.getElementById('ed-precio').value) || null,
+      cantidad: cantidad,
+      precio: precio,
+      monto: monto,
       condicion: document.getElementById('ed-condicion').value,
       moneda: document.getElementById('ed-moneda').value,
     }};
@@ -3376,6 +3401,18 @@ async function guardarCambiosEditor(enviarEmail) {
     if (!updates.cliente) { alert('Falta cliente'); return; }
     if (tabla === 'ordenes' && !updates.nemo) { alert('Falta nemo'); return; }
     if (tabla === 'aportes' && !updates.fondo_mutuo) { alert('Falta fondo'); return; }
+    
+    // Si va a enviar email Y es orden: precio y cantidad son obligatorios
+    if (enviarEmail && tabla === 'ordenes') {
+      if (!updates.precio || updates.precio <= 0) {
+        alert('No se puede enviar email sin precio. Completá el precio primero.');
+        return;
+      }
+      if (!updates.cantidad || updates.cantidad <= 0) {
+        alert('No se puede enviar email sin cantidad. Completá la cantidad (o el monto y precio para que se calcule sola).');
+        return;
+      }
+    }
     
     const {data, error} = await SB.from(tabla).update(updates).eq('id', id).select().single();
     if (error) { alert('Error guardando: ' + error.message); return; }
@@ -5163,8 +5200,18 @@ function checkMissingAndConfirm(parsed) {
     }
   }
 
-  // Precio obligatorio para órdenes
-  if (parsed.type === 'orden' && (!parsed.precio || Number(parsed.precio) <= 0)) {
+  // ── Validación según modo de envío ─────────────────────────
+  // Si email auto está OFF y la op NO tiene override "enviar ahora":
+  //   - Precio opcional (la encargada lo completa después)
+  //   - Pero requiere AL MENOS cantidad O monto (uno de los dos)
+  // Si email auto está ON o hay override:
+  //   - Todo obligatorio como antes
+  const emailAutoActivo = CURRENT_USER?.email_automatico === true;
+  const enviaAhora = parsed.enviarEmailOverride === true;
+  const requierePrecio = emailAutoActivo || enviaAhora;
+  
+  // Precio obligatorio para órdenes solo si va a enviar
+  if (parsed.type === 'orden' && requierePrecio && (!parsed.precio || Number(parsed.precio) <= 0)) {
     chatContext = {state:'await_missing_field', field:'precio', parsed};
     const isFondo = /^CF[IM]/.test(parsed.nemo||'');
     botMsg(`¿Cuál es el <strong>${isFondo?'valor cuota':'precio'}</strong>? (ej: <em>1055.05</em>, <em>9200</em>)`);
@@ -5175,6 +5222,15 @@ function checkMissingAndConfirm(parsed) {
   if (parsed.type === 'orden' && (!parsed.cantidad || Number(parsed.cantidad) <= 0)) {
     if (parsed.monto && Number(parsed.monto) > 0 && Number(parsed.precio) > 0) {
       parsed.cantidad = Math.round(Number(parsed.monto) / Number(parsed.precio));
+    } else if (!requierePrecio && parsed.monto && Number(parsed.monto) > 0) {
+      // Email OFF y no hay precio todavía: queda con monto, cantidad se calcula después
+      // No hay nada más que hacer, dejamos la op como está (monto sin cantidad)
+    } else if (!requierePrecio && (!parsed.monto || Number(parsed.monto) <= 0)) {
+      // Email OFF: pedir cantidad o monto (al menos uno)
+      chatContext = {state:'await_missing_field', field:'cantidad_o_monto', parsed};
+      const isFondo = /^CF[IM]/.test(parsed.nemo||'');
+      botMsg(`¿Cuántas ${isFondo?'cuotas':'acciones'} o cuánto monto? (ej: <em>10000 acc</em>, <em>50 palos</em>, <em>5 millones</em>)`);
+      return;
     } else {
       chatContext = {state:'await_missing_field', field:'cantidad', parsed};
       const isFondo = /^CF[IM]/.test(parsed.nemo||'');
@@ -5463,6 +5519,26 @@ function handleMissingField(text) {
     case 'nemo':    parsed.nemo     = text.trim().toUpperCase(); parsed.nemoResult={resolved:parsed.nemo,exact:true}; break;
     case 'precio':    parsed.precio    = parsePrecio(text); break;
     case 'cantidad':  parsed.cantidad  = parseMontoNatural(text); break;
+    case 'cantidad_o_monto': {
+      // El banquero puede dar cantidad (ej "10000 acc", "10000 cuotas") o monto ("50 palos", "5 millones")
+      const tl = text.toLowerCase();
+      const esMonto = /\b(palos?|millones?|mm?\b|lucas?|mil)\b/.test(tl) || 
+                      (parseMontoNatural(text) >= 1000000); // >1M asumimos monto
+      const valor = parseMontoNatural(text);
+      if (!valor || valor <= 0) {
+        botMsg('No entendí el número. Ejemplos: <em>10000 acc</em>, <em>50 palos</em>, <em>5 millones</em>');
+        return;
+      }
+      if (esMonto) {
+        parsed.monto = valor;
+        parsed.cantidad = null;
+        botMsg(`✓ Monto: <strong>$${valor.toLocaleString('es-CL')}</strong> (cantidad la completa la encargada)`);
+      } else {
+        parsed.cantidad = valor;
+        botMsg(`✓ Cantidad: <strong>${valor.toLocaleString('es-CL')}</strong>`);
+      }
+      break;
+    }
     case 'cta':       parsed.cta      = text.trim(); break;
     case 'corredora': parsed.corredora = text.trim().toUpperCase(); break;
     case 'condicion': {
@@ -5704,8 +5780,15 @@ function parseAbono(text) {
   
   // ── Corredora destino (opcional) ─────────────────────────────
   let corredora = '';
+  // Primero: con prefijo explícito (por LV, via MBI, corredora BTG)
   const corrM = text.match(/(?:por|v[ií]a|corredora)\s+(LV|MBI|BTG|SMB|BCI|BICE|ITAU|SANTANDER|CREDICORP|SECURITY|VALUES|RENTA4|LARRAIN|LC)\b/i);
-  if (corrM) corredora = corrM[1].toUpperCase();
+  if (corrM) {
+    corredora = corrM[1].toUpperCase();
+  } else {
+    // Sin prefijo: buscar corredora suelta (palabra independiente)
+    const corrLoose = text.match(/\b(LV|MBI|BTG|SMB|BCI|BICE|ITAU|SANTANDER|CREDICORP|SECURITY|VALUES|RENTA4|LARRAIN|LC)\b/i);
+    if (corrLoose) corredora = corrLoose[1].toUpperCase();
+  }
   
   // ── Cliente ──────────────────────────────────────────────────
   const clientResult = resolveCliente(text);
@@ -7240,7 +7323,7 @@ async function confirmarPendingOrder() {
       fecha:todayStr(), operacion:p.op, corredora:p.corredora||'',
       cta:p.cta||'', moneda:p.moneda||'CLP', rut:p.rut, cliente:p.cliente,
       cantidad:p.cantidad||null, nemo:p.nemo, condicion:p.condicion||'',
-      precio:p.precio||null, comision:null, email_enviado:false,
+      precio:p.precio||null, monto: p.monto||null, comision:null, email_enviado:false,
       ejecutado_por:executor, letra_op: letraOrden
     };
     
