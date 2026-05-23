@@ -5545,7 +5545,51 @@ function handleMissingField(text) {
     }
     case 'nombre':  parsed.cliente  = text.trim().toUpperCase(); break;
     case 'nemo':    parsed.nemo     = text.trim().toUpperCase(); parsed.nemoResult={resolved:parsed.nemo,exact:true}; break;
-    case 'precio':    parsed.precio    = parsePrecio(text); break;
+    case 'precio': {
+      const tl = text.trim().toLowerCase();
+      
+      // Opción 1: "nav", "vc", "valor cuota", "a nav", "al nav de hoy", "al cierre de ayer", etc.
+      const esNav = /^(?:a(?:l)?\s+)?(?:nav|vc|valor\s+cuota|cierre|valor\s+de\s+hoy|valor\s+de\s+ayer)(?:\s+(?:de\s+)?(?:hoy|ayer|ayer\s+pasado))?$/i.test(tl);
+      if (esNav) {
+        if (!parsed.nemo) {
+          botMsg('⚠ Necesito un nemo para resolver el NAV. Decime el nemo del fondo.');
+          return;
+        }
+        const vc = getValorCuotaNAV(parsed.nemo);
+        if (!vc) {
+          botMsg(`⚠ No tengo valor cuota guardado para <strong>${parsed.nemo}</strong>. Subí el Excel del Pulso o pasá el precio a mano.`);
+          return;
+        }
+        parsed.precio = Math.round(vc.valor * 100) / 100;
+        parsed.navFlag = false;
+        const fechaCorta = vc.fecha.split('-').reverse().join('/');
+        botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>`);
+        break;
+      }
+      
+      // Opción 2: "sin precio", "sin valor", "sin", "pendiente", "después", "luego"
+      const esSin = /^(?:sin(?:\s+(?:precio|valor|vc))?|pendiente|despu[ée]s|luego|no\s+s[eé])\b/i.test(tl);
+      if (esSin) {
+        const emailAutoActivo = CURRENT_USER?.email_automatico === true;
+        const enviaAhora = parsed.enviarEmailOverride === true;
+        if (emailAutoActivo || enviaAhora) {
+          botMsg('⚠ No podés dejar sin precio porque el email se va a enviar automáticamente. Apagá el switch <strong>EMAIL ON</strong> arriba si querés dejarla pendiente, o pasá el precio.');
+          return;
+        }
+        parsed.precio = null;
+        botMsg(`✓ Operación quedará <strong>pendiente sin precio</strong>. La encargada lo completa después.`);
+        break;
+      }
+      
+      // Caso normal: parsear precio numérico
+      const precio = parsePrecio(text);
+      if (!precio || precio <= 0) {
+        botMsg('⚠ No entendí el precio. Escribí un número (ej: <em>1055.05</em>) o decime <em>nav</em> para usar el último valor cuota, o <em>sin precio</em> si email está OFF.');
+        return;
+      }
+      parsed.precio = precio;
+      break;
+    }
     case 'cantidad':  parsed.cantidad  = parseMontoNatural(text); break;
     case 'cantidad_o_monto': {
       // El banquero puede dar cantidad (ej "10000 acc", "10000 cuotas") o monto ("50 palos", "5 millones")
