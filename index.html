@@ -2036,8 +2036,14 @@ function autoResize(el) {
 // ═══════════════════════════════════════════════════════════
 // REALTIME
 // ═══════════════════════════════════════════════════════════
+let _realtimeChannel = null;
 function initRealtime() {
-  SB.channel('blotter-rt')
+  // Guard: si ya hay un canal activo, no crear otro
+  if (_realtimeChannel) {
+    console.log('[Realtime] Ya inicializado, skip');
+    return;
+  }
+  _realtimeChannel = SB.channel('blotter-rt')
     .on('postgres_changes', {event:'*', schema:'public', table:'ordenes'}, () => cargarOrdenes())
     .on('postgres_changes', {event:'*', schema:'public', table:'aportes'}, () => { if(isActive('aportes')) cargarAportes(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'saldos'}, () => { if(isActive('saldos')) cargarSaldos(); })
@@ -2045,7 +2051,7 @@ function initRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'cuentas'}, () => cargarClientes())
     .subscribe(s => {
       const dot = document.getElementById('rt-dot');
-      dot.classList.toggle('live', s==='SUBSCRIBED');
+      if (dot) dot.classList.toggle('live', s==='SUBSCRIBED');
     });
 }
 function isActive(sec) { return document.getElementById('sec-'+sec)?.classList.contains('active'); }
@@ -2248,11 +2254,19 @@ async function enviarEmailCruce(rows, corredora) {
     ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
   </body></html>`;
 
-  // CC: banker + clientes con email_ok que estén en las patas y necesiten OK
+  // CC: ejecutor de la orden (banquero que la creó) + clientes con email_ok que estén en las patas y necesiten OK
   const ccList = [];
   const seen = new Set();
-  if (CURRENT_USER?.email && CURRENT_USER.email !== destino) {
-    ccList.push({emailAddress:{address:CURRENT_USER.email}});
+  // Ejecutor: usar el ejecutado_por de la primera row (todas son del mismo cruce)
+  const ejecutorEmail = getEjecutorEmail(rows[0]?.ejecutado_por);
+  if (ejecutorEmail && ejecutorEmail !== destino) {
+    ccList.push({emailAddress:{address: ejecutorEmail}});
+    seen.add(ejecutorEmail.toLowerCase());
+  }
+  // Si el usuario actual NO es el ejecutor pero está enviando el email (encargada de confirmaciones),
+  // también copiarlo para que tenga registro
+  if (CURRENT_USER?.email && CURRENT_USER.email !== destino && !seen.has(CURRENT_USER.email.toLowerCase())) {
+    ccList.push({emailAddress:{address: CURRENT_USER.email}});
     seen.add(CURRENT_USER.email.toLowerCase());
   }
   for (const r of rows) {
@@ -2419,6 +2433,28 @@ function debeEnviarEmailAuto(parsed) {
   if (parsed && parsed.enviarEmailOverride === true)  return true;
   if (parsed && parsed.enviarEmailOverride === false) return false;
   return CURRENT_USER?.email_automatico === true;
+}
+
+// Devuelve el email del banquero ejecutor de la operación buscando en BANKERS_DB.
+// Si no se encuentra (raro), fallback al email del usuario actual.
+function getEjecutorEmail(ejecutadoPor) {
+  if (!ejecutadoPor) return CURRENT_USER?.email || null;
+  
+  const ejecutadoLower = ejecutadoPor.trim().toLowerCase();
+  // Buscar en BANKERS_DB por nombre
+  const banquero = (typeof BANKERS_DB !== 'undefined' && BANKERS_DB) 
+    ? BANKERS_DB.find(b => (b.nombre||'').trim().toLowerCase() === ejecutadoLower)
+    : null;
+  
+  if (banquero?.email) return banquero.email;
+  
+  // Fallback: si el ejecutor es el usuario actual, usar su email
+  if (CURRENT_USER?.nombre && CURRENT_USER.nombre.trim().toLowerCase() === ejecutadoLower) {
+    return CURRENT_USER.email;
+  }
+  
+  // No encontrado: devolver null (no copiar nada falso)
+  return null;
 }
 
 async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
@@ -2664,14 +2700,19 @@ async function loadBanqueros() {
   if (error) console.warn('loadBanqueros error:', error.message);
   BANKERS_DB = data || [];
 
-  // Load pending OTP codes for admin
+  // Load pending OTP codes for admin (silent fail si la tabla no existe)
   const isAdmin = ['admin','administrador'].includes((CURRENT_USER?.rol||'').toLowerCase());
   if (isAdmin) {
-    const { data: otps } = await SB.from('otp_codes')
-      .select('*').eq('usado', false).gte('expira_at', new Date().toISOString()).order('created_at', {ascending:false});
-    const panel = document.getElementById('otp-panel');
-    const list  = document.getElementById('otp-list');
-    if (otps && otps.length && panel && list) {
+    try {
+      const { data: otps, error: otpErr } = await SB.from('otp_codes')
+        .select('*').eq('usado', false).gte('expira_at', new Date().toISOString()).order('created_at', {ascending:false});
+      if (otpErr) {
+        // Silent: si la tabla no existe (404) o falta permiso, ignorar sin spam en consola
+        return;
+      }
+      const panel = document.getElementById('otp-panel');
+      const list  = document.getElementById('otp-list');
+      if (otps && otps.length && panel && list) {
       panel.style.display = 'block';
       list.innerHTML = otps.map(o => {
         const mins = Math.round((new Date(o.expira_at) - new Date()) / 60000);
@@ -2693,6 +2734,9 @@ async function loadBanqueros() {
       }).join('');
     } else if (panel) {
       panel.style.display = 'none';
+    }
+    } catch (e) {
+      // Silent fail
     }
   }
   renderBanqueros();
@@ -7294,8 +7338,9 @@ function showAliasSuggestion(raw, candidates, fondoCandidates) {
 // CONFIRM EXECUTION
 // ═══════════════════════════════════════════════════════════
 async function confirmarPendingOrder() {
-  if (!pendingOrder) return;
+  if (!pendingOrder) { console.warn('[DEBUG] No hay pendingOrder'); return; }
   const p = pendingOrder;
+  console.log('[DEBUG] confirmarPendingOrder type=', p.type, 'parsed:', p);
 
   // ── HARD VALIDATION — never save an incomplete order ──────────────
   if (p.type === 'bloque') {
@@ -7432,12 +7477,34 @@ async function confirmarPendingOrder() {
     
     const insertarYEnviar = async (necesitaOk, emailOk) => {
       row.necesita_ok = !!necesitaOk;
-      const {data,error} = await SB.from('ordenes').insert(row).select().single();
-      if (error) { botMsg(`❌ Error: ${error.message}`); return; }
+      console.log('[DEBUG] Intentando insert orden:', row);
+      let data, error;
+      try {
+        const resp = await SB.from('ordenes').insert(row).select().single();
+        data = resp.data;
+        error = resp.error;
+        console.log('[DEBUG] Insert respondió - data:', data, 'error:', error);
+      } catch (e) {
+        console.error('[DEBUG] Insert lanzó excepción:', e);
+        botMsg(`❌ Excepción guardando: ${e.message}`);
+        return;
+      }
+      if (error) { 
+        console.error('[DEBUG] Error de Supabase:', error);
+        botMsg(`❌ Error: ${error.message}${error.details?' · '+error.details:''}`); 
+        return; 
+      }
+      if (!data) {
+        botMsg(`❌ No se recibió respuesta del servidor (timeout o RLS)`);
+        return;
+      }
       
       trackUso(p.nemo, p.cliente);
       
       if (!irAlCorredor) {
+        // Sin destino email (corredora sin config o Outlook desconectado) → marcar email_estado apropiado
+        const sinDestEstado = corrEmail ? 'pendiente' : 'no_aplica';
+        await SB.from('ordenes').update({email_estado: sinDestEstado}).eq('id', data.id);
         const aviso = !corrEmail ? '' : ' · (conectá Outlook para enviar email)';
         botMsg(`✅ Orden guardada${aviso}`);
         if (isActive('ordenes')) await cargarOrdenes();
@@ -9122,9 +9189,11 @@ async function aprenderTasaComision(agf, corredora, tasa) {
   const k = `${a}|${c}`;
   comisionesCache[k] = tasa;
   localStorage.setItem(COMIS_CACHE_KEY, JSON.stringify(comisionesCache));
+  // Intentar guardar en BD (silent fail si la tabla no existe o falta permiso RLS)
   try {
-    await SB.from('comisiones').upsert({agf:a, corredora:c, tasa}, {onConflict:'agf,corredora'});
-  } catch(e) { /* tabla puede no existir aún */ }
+    const { error } = await SB.from('comisiones').upsert({agf:a, corredora:c, tasa}, {onConflict:'agf,corredora'});
+    // Silenciar error 403/404: el cache local sigue funcionando
+  } catch(e) { /* silent */ }
 }
 
 // Calcula comisión + IVA + total
