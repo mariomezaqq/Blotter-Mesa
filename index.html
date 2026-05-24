@@ -7341,6 +7341,26 @@ async function confirmarPendingOrder() {
   if (!pendingOrder) { console.warn('[DEBUG] No hay pendingOrder'); return; }
   const p = pendingOrder;
   console.log('[DEBUG] confirmarPendingOrder type=', p.type, 'parsed:', p);
+  
+  // Guard: prevenir doble ejecución
+  if (window._confirmandoOrden) {
+    console.warn('[DEBUG] Ya hay una confirmación en progreso, ignoro');
+    return;
+  }
+  window._confirmandoOrden = true;
+  
+  try {
+    await _confirmarPendingOrderInner(p);
+  } catch (e) {
+    console.error('[DEBUG] Error en confirmarPendingOrder:', e);
+    botMsg(`❌ Error inesperado: ${e.message}`);
+  } finally {
+    window._confirmandoOrden = false;
+    pendingOrder = null;
+  }
+}
+
+async function _confirmarPendingOrderInner(p) {
 
   // ── HARD VALIDATION — never save an incomplete order ──────────────
   if (p.type === 'bloque') {
@@ -7442,8 +7462,26 @@ async function confirmarPendingOrder() {
     if (!p.cta)       missing.push('cuenta');
     if (!p.corredora) missing.push('corredora');
     if (!p.condicion) missing.push('condición (PH, PM o CN)');
-    if (!p.cantidad || Number(p.cantidad) <= 0) missing.push('cantidad (cuotas/acciones)');
-    if (!p.precio   || Number(p.precio)   <= 0) missing.push('precio (valor cuota)');
+    
+    // Validación de cantidad/precio depende del modo de envío de email
+    // Si email auto OFF y NO hay override "enviar ahora": precio opcional, requiere cantidad O monto
+    // Si email auto ON o override: cantidad Y precio obligatorios
+    const emailAutoActivo = CURRENT_USER?.email_automatico === true;
+    const enviaAhora = p.enviarEmailOverride === true;
+    const requierePrecio = emailAutoActivo || enviaAhora;
+    
+    if (requierePrecio) {
+      if (!p.cantidad || Number(p.cantidad) <= 0) missing.push('cantidad (cuotas/acciones)');
+      if (!p.precio   || Number(p.precio)   <= 0) missing.push('precio (valor cuota)');
+    } else {
+      // Email OFF: al menos uno de cantidad o monto debe estar presente
+      const tieneCantidad = p.cantidad && Number(p.cantidad) > 0;
+      const tieneMonto = p.monto && Number(p.monto) > 0;
+      if (!tieneCantidad && !tieneMonto) {
+        missing.push('cantidad o monto (al menos uno)');
+      }
+    }
+    
     if (missing.length) {
       // Re-enter validation flow instead of saving
       botMsg(`⚠ Faltan campos: <strong>${missing.join(', ')}</strong>. Completalos antes de confirmar.`);
@@ -7458,12 +7496,29 @@ async function confirmarPendingOrder() {
   const executor = CURRENT_USER?.nombre || '—';
 
   // Auto-register client if new
-  if (p.rut && p.cliente) await autoGuardarCliente(p.rut, p.cliente, p.cta||'', p.corredora||'');
+  if (p.rut && p.cliente) {
+    console.log('[DEBUG] Llamando autoGuardarCliente...');
+    try {
+      await autoGuardarCliente(p.rut, p.cliente, p.cta||'', p.corredora||'');
+      console.log('[DEBUG] autoGuardarCliente completado');
+    } catch (e) {
+      console.error('[DEBUG] autoGuardarCliente falló:', e);
+      // Seguir igual, no es crítico
+    }
+  }
 
   if (p.type === 'bloque') {
     // bloque handled above
   } else if (p.type === 'orden') {
-    const letraOrden = await siguienteLetraDelDia(todayStr(), 'ordenes');
+    console.log('[DEBUG] Calculando letra del día...');
+    let letraOrden;
+    try {
+      letraOrden = await siguienteLetraDelDia(todayStr(), 'ordenes');
+      console.log('[DEBUG] Letra asignada:', letraOrden);
+    } catch (e) {
+      console.error('[DEBUG] siguienteLetraDelDia falló:', e);
+      letraOrden = 'A';
+    }
     const row = {
       fecha:todayStr(), operacion:p.op, corredora:p.corredora||'',
       cta:p.cta||'', moneda:p.moneda||'CLP', rut:p.rut, cliente:p.cliente,
@@ -7474,6 +7529,7 @@ async function confirmarPendingOrder() {
     
     const corrEmail = corredorasConfig[(p.corredora||'').toUpperCase()];
     const irAlCorredor = corrEmail && outlookAccount;
+    console.log('[DEBUG] corrEmail:', corrEmail, 'irAlCorredor:', irAlCorredor);
     
     const insertarYEnviar = async (necesitaOk, emailOk) => {
       row.necesita_ok = !!necesitaOk;
@@ -8842,20 +8898,50 @@ async function guardarConfigCorredoras() {
 // SAVE OPERATIONS (from forms)
 // ═══════════════════════════════════════════════════════════
 async function autoGuardarCliente(rut, nombre, cta, corredora) {
+  console.log('[DEBUG] autoGuardarCliente:', {rut, nombre, cta, corredora});
   // Validar cuenta: solo dígitos, descartar valores como PH, PM, CN
   const ctaValida = cta && /^\d+$/.test(String(cta).trim()) ? String(cta).trim() : '';
   
   const ex = DB_CLIENTES.find(c => c.rut === rut);
   if (ex) {
-    if (ctaValida && !ex.cuentas.find(c => c.cta === ctaValida)) {
-      await SB.from('cuentas').insert({cliente_id:ex.id, cta:ctaValida, corredora:corredora||''});
-      await cargarClientes();
+    console.log('[DEBUG] Cliente existe en cache, cuentas:', ex.cuentas);
+    // Verificar si ya tiene esta cuenta+corredora exacta
+    const yaTiene = ctaValida && ex.cuentas.find(c => 
+      c.cta === ctaValida && (c.corredora||'').toUpperCase() === (corredora||'').toUpperCase()
+    );
+    if (ctaValida && !yaTiene) {
+      console.log('[DEBUG] Insertando nueva cuenta para cliente existente');
+      try {
+        const {error} = await SB.from('cuentas').insert({cliente_id:ex.id, cta:ctaValida, corredora:corredora||''});
+        if (error) {
+          console.warn('[DEBUG] Insert cuenta falló (probable duplicado):', error.message);
+        } else {
+          await cargarClientes();
+        }
+      } catch(e) {
+        console.warn('[DEBUG] Excepción insertando cuenta:', e.message);
+      }
+    } else {
+      console.log('[DEBUG] Cliente ya tiene esta cuenta, no hago nada');
     }
     return;
   }
-  const {data} = await SB.from('clientes').insert({rut, nombre, tipo:'persona'}).select().single();
-  if (data && ctaValida) await SB.from('cuentas').insert({cliente_id:data.id, cta:ctaValida, corredora:corredora||''});
-  await cargarClientes();
+  console.log('[DEBUG] Cliente no existe, creando nuevo...');
+  try {
+    const {data, error} = await SB.from('clientes').insert({rut, nombre, tipo:'persona'}).select().single();
+    if (error) {
+      console.warn('[DEBUG] Insert cliente falló:', error.message);
+      return;
+    }
+    if (data && ctaValida) {
+      const {error:eCta} = await SB.from('cuentas').insert({cliente_id:data.id, cta:ctaValida, corredora:corredora||''});
+      if (eCta) console.warn('[DEBUG] Insert cuenta nueva falló:', eCta.message);
+    }
+    await cargarClientes();
+    console.log('[DEBUG] Cliente nuevo creado OK');
+  } catch(e) {
+    console.warn('[DEBUG] Excepción creando cliente:', e.message);
+  }
 }
 async function guardarOrden() {
   if(!ordenOp){msg('o-msg','Seleccioná Compra o Venta',false);return;}
