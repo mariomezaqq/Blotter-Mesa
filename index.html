@@ -1530,6 +1530,89 @@ let corredorasConfig = {};
 let CURRENT_USER = null;   // {id, email, nombre, rol, iniciales}
 let BANKERS_DB = [];       // profiles loaded from supabase
 
+// ═══════════════════════════════════════════════════════════
+// CACHE cliente ↔ banqueros (aprende quién atiende a quién)
+// ═══════════════════════════════════════════════════════════
+// Estructura: { 'rut1': [{banquero_id, email, nombre, veces_copiado, ultima_vez}, ...] }
+let CLIENTE_BANQUEROS_CACHE = {};
+
+async function cargarClienteBanquerosCache() {
+  try {
+    const {data, error} = await SB.from('cliente_banqueros').select('*');
+    if (error) return; // silent (tabla puede no existir aún)
+    if (!data) return;
+    CLIENTE_BANQUEROS_CACHE = {};
+    for (const r of data) {
+      if (!CLIENTE_BANQUEROS_CACHE[r.cliente_rut]) CLIENTE_BANQUEROS_CACHE[r.cliente_rut] = [];
+      // Enriquecer con email y nombre del BANKERS_DB
+      const b = BANKERS_DB.find(x => x.id === r.banquero_id);
+      CLIENTE_BANQUEROS_CACHE[r.cliente_rut].push({
+        banquero_id: r.banquero_id,
+        email: b?.email || null,
+        nombre: b?.nombre || null,
+        veces_copiado: r.veces_copiado || 0,
+        ultima_vez: r.ultima_vez
+      });
+    }
+  } catch(e) { /* silent */ }
+}
+
+// Devuelve emails de banqueros que atienden a un cliente (excluyendo al que envía)
+function getBanquerosDeCliente(rut, excludeEmail=null) {
+  const lista = CLIENTE_BANQUEROS_CACHE[rut] || [];
+  return lista
+    .filter(b => b.email && (!excludeEmail || b.email.toLowerCase() !== excludeEmail.toLowerCase()))
+    .sort((a,b) => (b.veces_copiado||0) - (a.veces_copiado||0)) // más usados primero
+    .map(b => b.email);
+}
+
+// Aprende: cuando una orden/abono/aporte se envía, registrar al ejecutor como banquero del cliente
+async function aprenderClienteBanquero(rut, ejecutadoPor) {
+  if (!rut || !ejecutadoPor) return;
+  const ejecutadoLower = ejecutadoPor.trim().toLowerCase();
+  const banquero = BANKERS_DB.find(b => (b.nombre||'').trim().toLowerCase() === ejecutadoLower);
+  if (!banquero?.id) return;
+  
+  // Update cache local optimista
+  if (!CLIENTE_BANQUEROS_CACHE[rut]) CLIENTE_BANQUEROS_CACHE[rut] = [];
+  let entry = CLIENTE_BANQUEROS_CACHE[rut].find(e => e.banquero_id === banquero.id);
+  if (entry) {
+    entry.veces_copiado = (entry.veces_copiado||0) + 1;
+    entry.ultima_vez = new Date().toISOString();
+  } else {
+    CLIENTE_BANQUEROS_CACHE[rut].push({
+      banquero_id: banquero.id,
+      email: banquero.email,
+      nombre: banquero.nombre,
+      veces_copiado: 1,
+      ultima_vez: new Date().toISOString()
+    });
+  }
+  
+  // Persistir en BD (silent fail si la tabla no existe)
+  try {
+    // Upsert con conteo +1: usar SQL inline via RPC sería ideal pero hacemos SELECT+UPDATE/INSERT
+    const {data: existing} = await SB.from('cliente_banqueros')
+      .select('veces_copiado')
+      .eq('cliente_rut', rut)
+      .eq('banquero_id', banquero.id)
+      .maybeSingle();
+    if (existing) {
+      await SB.from('cliente_banqueros').update({
+        veces_copiado: (existing.veces_copiado||0) + 1,
+        ultima_vez: new Date().toISOString()
+      }).eq('cliente_rut', rut).eq('banquero_id', banquero.id);
+    } else {
+      await SB.from('cliente_banqueros').insert({
+        cliente_rut: rut,
+        banquero_id: banquero.id,
+        veces_copiado: 1,
+        ultima_vez: new Date().toISOString()
+      });
+    }
+  } catch(e) { /* silent */ }
+}
+
 // NEMO ALIASES: {NEMO: ['alias1','alias2',...]} — persisted in Supabase config
 let NEMO_ALIASES = {
   'FALABELLA': ['FALAB','FALAB CI','FALABEND','FALABCI','FBD'],
@@ -2384,10 +2467,18 @@ async function enviarEmailMultiple(rows, corredora) {
     ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
   </body></html>`;
 
-  // CC: banker + clientes con email_ok que necesiten OK
+  // CC: ejecutor de la orden (banquero que la creó) + usuario actual si distinto + clientes con email_ok que necesiten OK
   const ccList = [];
   const seen = new Set();
-  if (CURRENT_USER?.email && CURRENT_USER.email !== destino) {
+  // Ejecutor: usar el ejecutado_por de la primera row (todas son del mismo bloque)
+  const ejecutorEmail = getEjecutorEmail(rows[0]?.ejecutado_por);
+  if (ejecutorEmail && ejecutorEmail !== destino) {
+    ccList.push({emailAddress:{address: ejecutorEmail}});
+    seen.add(ejecutorEmail.toLowerCase());
+  }
+  // Si el usuario actual NO es el ejecutor pero está enviando el email (encargada de confirmaciones),
+  // también copiarlo para que tenga registro
+  if (CURRENT_USER?.email && CURRENT_USER.email !== destino && !seen.has(CURRENT_USER.email.toLowerCase())) {
     ccList.push({emailAddress:{address:CURRENT_USER.email}});
     seen.add(CURRENT_USER.email.toLowerCase());
   }
@@ -2455,6 +2546,96 @@ function getEjecutorEmail(ejecutadoPor) {
   
   // No encontrado: devolver null (no copiar nada falso)
   return null;
+}
+
+// ═══════════════════════════════════════════════════════════
+// EMAIL PARA ABONOS (depósitos de cliente a corredora)
+// ═══════════════════════════════════════════════════════════
+async function enviarEmailAbono(datos) {
+  const token = await getOutlookToken();
+  if (!token) return { ok:false, msg:'No autenticado en Outlook' };
+  
+  const corrKey = (datos.corredora||'').toUpperCase().trim();
+  let destino = corredorasConfig[corrKey];
+  if (!destino) {
+    const keys = Object.keys(corredorasConfig);
+    const partial = keys.find(k => k.includes(corrKey) || corrKey.includes(k));
+    if (partial) destino = corredorasConfig[partial];
+  }
+  if (!destino) return { ok:false, msg: `Sin email para "${datos.corredora}"` };
+  
+  const fecha = datos.fecha || todayStr();
+  const [yyyy,mm,dd] = fecha.split('-');
+  const fechaCorta = `${dd}-${mm}`;
+  const subj = `**ABONO ${fechaCorta}** ${datos.cliente} · $${Number(datos.monto||0).toLocaleString('es-CL')}`;
+  
+  const userName = CURRENT_USER?.nombre?.split(' ')[0] || '';
+  const contactName = (destino.split('@')[0]||'').split('.')[0];
+  const saludo = contactName ? `Hola ${contactName.charAt(0).toUpperCase()+contactName.slice(1)},` : 'Hola,';
+  
+  const tableHtml = `<table style="border-collapse:collapse;width:100%;max-width:700px">
+    <thead>
+      <tr style="background:#1f3a5f;color:#fff">
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fecha</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">RUT</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cuenta</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Monto</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Medio</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Banco origen</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${fecha}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.cliente||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.rut||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.cta||'0'}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right;font-weight:600">$${Number(datos.monto||0).toLocaleString('es-CL')}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.medio||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.banco_origen||'—'}</td>
+      </tr>
+    </tbody>
+  </table>`;
+  
+  const htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
+    <p style="margin:0 0 16px">${saludo}</p>
+    <p style="margin:0 0 16px">Por favor confirmar recepción del siguiente abono:</p>
+    ${tableHtml}
+    ${datos.observaciones ? `<p style="margin:16px 0 0;font-size:12px;color:#57606a"><strong>Observaciones:</strong> ${datos.observaciones}</p>` : ''}
+    <p style="margin:24px 0 0">Saludos,</p>
+    ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
+  </body></html>`;
+  
+  // CC: ejecutor + usuario actual si distinto
+  const ccList = [];
+  const seen = new Set();
+  const ejecutorEmail = getEjecutorEmail(datos.ejecutado_por);
+  if (ejecutorEmail && ejecutorEmail !== destino) {
+    ccList.push({emailAddress:{address: ejecutorEmail}});
+    seen.add(ejecutorEmail.toLowerCase());
+  }
+  if (CURRENT_USER?.email && CURRENT_USER.email !== destino && !seen.has(CURRENT_USER.email.toLowerCase())) {
+    ccList.push({emailAddress:{address: CURRENT_USER.email}});
+    seen.add(CURRENT_USER.email.toLowerCase());
+  }
+  
+  const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method:'POST',
+    headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
+    body: JSON.stringify({
+      message:{
+        subject: subj,
+        body:{contentType:'HTML',content:htmlBody},
+        toRecipients:[{emailAddress:{address:destino}}],
+        ccRecipients: ccList
+      },
+      saveToSentItems:true
+    })
+  });
+  if (r.ok||r.status===202) return {ok:true};
+  const err=await r.json().catch(()=>({}));
+  return {ok:false, msg:err.error?.message||`HTTP ${r.status}`};
 }
 
 async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
@@ -2641,6 +2822,13 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
     }
   }
   
+  // CC ejecutor (banquero que creó la orden, puede ser distinto del usuario que envía el email)
+  const ejecutorEmailSingle = getEjecutorEmail(datos.ejecutado_por);
+  if (ejecutorEmailSingle && ejecutorEmailSingle !== toAddress && !seen.has(ejecutorEmailSingle.toLowerCase())) {
+    ccList.push({emailAddress:{address: ejecutorEmailSingle}});
+    seen.add(ejecutorEmailSingle.toLowerCase());
+  }
+  
   if (CURRENT_USER?.email && CURRENT_USER.email !== toAddress && !seen.has(CURRENT_USER.email.toLowerCase())) {
     ccList.push({emailAddress:{address:CURRENT_USER.email}});
     seen.add(CURRENT_USER.email.toLowerCase());
@@ -2681,17 +2869,34 @@ async function cargarClientes() {
   DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[], titular_rut:c.titular_rut||null, banquero_asignado:c.banquero_asignado||null}));
 }
 async function descartarOTP(email) {
-  await SB.from('otp_codes').update({usado:true}).eq('email', email);
-  await loadBanqueros();
+  // Si la tabla no existe, no hacer nada (silent)
+  if (window._otpCodesUnavailable) return;
+  try {
+    const {error} = await SB.from('otp_codes').update({usado:true}).eq('email', email);
+    if (error) {
+      window._otpCodesUnavailable = true;
+      return;
+    }
+    await loadBanqueros();
+  } catch(e) {
+    window._otpCodesUnavailable = true;
+  }
 }
 
 async function aprobarBanquero(id) {
-  await SB.from('banqueros').update({estado:'activo'}).eq('id', id);
+  const {error} = await SB.from('banqueros').update({estado:'activo'}).eq('id', id);
+  if (error) {
+    alert('Error aprobando banquero: ' + error.message);
+    return;
+  }
   await loadBanqueros();
-  botMsg && typeof botMsg === 'function' ? null : null; // silence
 }
 async function bloquearBanquero(id) {
-  await SB.from('banqueros').update({estado:'bloqueado'}).eq('id', id);
+  const {error} = await SB.from('banqueros').update({estado:'bloqueado'}).eq('id', id);
+  if (error) {
+    alert('Error bloqueando banquero: ' + error.message);
+    return;
+  }
   await loadBanqueros();
 }
 
@@ -2699,42 +2904,49 @@ async function loadBanqueros() {
   const { data, error } = await SB.from('banqueros').select('*').order('nombre');
   if (error) console.warn('loadBanqueros error:', error.message);
   BANKERS_DB = data || [];
+  
+  // Cargar cache cliente↔banqueros después de tener BANKERS_DB
+  await cargarClienteBanquerosCache();
 
   // Load pending OTP codes for admin (silent fail si la tabla no existe)
   const isAdmin = ['admin','administrador'].includes((CURRENT_USER?.rol||'').toLowerCase());
-  if (isAdmin) {
+  // Skip si la tabla otp_codes ya falló una vez (memoria de sesión)
+  if (isAdmin && !window._otpCodesUnavailable) {
     try {
       const { data: otps, error: otpErr } = await SB.from('otp_codes')
         .select('*').eq('usado', false).gte('expira_at', new Date().toISOString()).order('created_at', {ascending:false});
+      // Silent: si la tabla no existe (404) o falta permiso, marcar como no disponible y no volver a intentar
       if (otpErr) {
-        // Silent: si la tabla no existe (404) o falta permiso, ignorar sin spam en consola
-        return;
+        window._otpCodesUnavailable = true;
+        const panel = document.getElementById('otp-panel');
+        if (panel) panel.style.display = 'none';
+      } else {
+        const panel = document.getElementById('otp-panel');
+        const list  = document.getElementById('otp-list');
+        if (otps && otps.length && panel && list) {
+          panel.style.display = 'block';
+          list.innerHTML = otps.map(o => {
+            const mins = Math.round((new Date(o.expira_at) - new Date()) / 60000);
+            return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)">
+              <div style="flex:1">
+                <div style="font-size:12px;font-weight:600">${o.nombre||o.email}</div>
+                <div style="font-size:11px;color:var(--text2);font-family:var(--mono)">${o.email}</div>
+              </div>
+              <div style="font-family:var(--mono);font-size:24px;font-weight:700;
+                letter-spacing:.2em;color:var(--warn);background:var(--surface);
+                padding:6px 14px;border-radius:var(--r);border:1px solid var(--warn)">
+                ${o.codigo}
+              </div>
+              <div style="font-size:10px;color:var(--text2);text-align:right">
+                Expira en<br><strong>${mins} min</strong>
+              </div>
+              <button class="btn sm danger" onclick="descartarOTP('${o.email}')">✕</button>
+            </div>`;
+          }).join('');
+        } else if (panel) {
+          panel.style.display = 'none';
+        }
       }
-      const panel = document.getElementById('otp-panel');
-      const list  = document.getElementById('otp-list');
-      if (otps && otps.length && panel && list) {
-      panel.style.display = 'block';
-      list.innerHTML = otps.map(o => {
-        const mins = Math.round((new Date(o.expira_at) - new Date()) / 60000);
-        return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)">
-          <div style="flex:1">
-            <div style="font-size:12px;font-weight:600">${o.nombre||o.email}</div>
-            <div style="font-size:11px;color:var(--text2);font-family:var(--mono)">${o.email}</div>
-          </div>
-          <div style="font-family:var(--mono);font-size:24px;font-weight:700;
-            letter-spacing:.2em;color:var(--warn);background:var(--surface);
-            padding:6px 14px;border-radius:var(--r);border:1px solid var(--warn)">
-            ${o.codigo}
-          </div>
-          <div style="font-size:10px;color:var(--text2);text-align:right">
-            Expira en<br><strong>${mins} min</strong>
-          </div>
-          <button class="btn sm danger" onclick="descartarOTP('${o.email}')">✕</button>
-        </div>`;
-      }).join('');
-    } else if (panel) {
-      panel.style.display = 'none';
-    }
     } catch (e) {
       // Silent fail
     }
@@ -3266,50 +3478,91 @@ function renderEditorModal() {
   
   if (isGrupo && isOrden) {
     // ─── Cruce/Bloque agrupado ───
-    // Campos COMPARTIDOS (mismos para todas las legs)
+    // CRITERIO ESTRICTO:
+    // - COMPARTIDOS: corredora, fecha, letra, moneda (datos del grupo)
+    // - POR LEG: operación, nemo, cliente, rut, cta, cantidad, precio, monto, condición, comisión
+    
+    // Originales compartidos (para detectar cambios al guardar)
+    EDITOR_CTX.compartidosOriginales = {
+      corredora: row.corredora || '',
+      moneda: row.moneda || 'CLP',
+      fecha: row.fecha || ''
+    };
+    
+    // Detectar si las legs difieren en compartidos (no debería pero por seguridad)
+    const corredorasUnicas = [...new Set(grupo.map(l => (l.corredora||'').toUpperCase().trim()))];
+    const monedasUnicas = [...new Set(grupo.map(l => l.moneda || 'CLP'))];
+    const avisoCorrDif = corredorasUnicas.length > 1 ? `<div style="font-size:10px;color:var(--warn);margin-top:6px">⚠ Las legs tienen corredoras distintas (${corredorasUnicas.join(', ')}). Al guardar se unifican al valor de arriba.</div>` : '';
+    const avisoMonDif = monedasUnicas.length > 1 ? `<div style="font-size:10px;color:var(--warn);margin-top:6px">⚠ Las legs tienen monedas distintas. Al guardar se unifican.</div>` : '';
+    
     fieldsHtml = `
       <div style="background:var(--surface2);padding:12px 14px;border-radius:8px;margin-bottom:14px;border:1px solid var(--border)">
         <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">// DATOS COMPARTIDOS DEL GRUPO</div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
-          <div class="field"><label>Nemo</label><input id="ed-grupo-nemo" type="text" value="${row.nemo||''}"></div>
-          <div class="field"><label>Corredora</label><input id="ed-grupo-corredora" type="text" value="${row.corredora||''}"></div>
-          <div class="field"><label>Condición</label>
-            <select id="ed-grupo-condicion">
-              <option value=""${!row.condicion?' selected':''}>—</option>
-              <option value="PH"${row.condicion==='PH'?' selected':''}>PH</option>
-              <option value="PM"${row.condicion==='PM'?' selected':''}>PM</option>
-              <option value="CN"${row.condicion==='CN'?' selected':''}>CN</option>
-            </select>
-          </div>
-          <div class="field"><label>Precio</label><input id="ed-grupo-precio" type="number" step="0.01" value="${row.precio||''}"></div>
-          <div class="field"><label>Moneda</label>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+          <div class="field"><label>Corredora <span style="font-size:9px;color:var(--accent)">✓ compartido</span></label><input id="ed-grupo-corredora" type="text" value="${row.corredora||''}"></div>
+          <div class="field"><label>Fecha <span style="font-size:9px;color:var(--accent)">✓ compartido</span></label><input id="ed-grupo-fecha" type="date" value="${row.fecha||''}"></div>
+          <div class="field"><label>Moneda <span style="font-size:9px;color:var(--accent)">✓ compartido</span></label>
             <select id="ed-grupo-moneda">
               <option${row.moneda==='CLP'?' selected':''}>CLP</option>
               <option${row.moneda==='USD'?' selected':''}>USD</option>
               <option${row.moneda==='UF'?' selected':''}>UF</option>
             </select>
           </div>
-          <div class="field"><label>Letra</label><input id="ed-grupo-letra" type="text" value="${row.letra_op||''}" disabled style="opacity:.6"></div>
+          <div class="field"><label>Letra <span style="font-size:9px;color:var(--text2)">(grupo)</span></label><input id="ed-grupo-letra" type="text" value="${row.letra_op||''}" disabled style="opacity:.6"></div>
         </div>
+        ${avisoCorrDif}${avisoMonDif}
       </div>
       
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">// PARTICIPANTES (${grupo.length})</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">// PARTICIPANTES (${grupo.length}) <span style="opacity:.7;text-transform:none">— editá cada leg independientemente</span></div>
     `;
     
     grupo.forEach((leg, i) => {
       const opColor = leg.operacion === 'COMPRA' ? 'var(--compra)' : 'var(--venta)';
+      const baseLeg = (leg.precio && leg.cantidad) ? leg.precio * leg.cantidad : (leg.monto || 0);
+      
+      // Calcular tasa actual (si hay comisión guardada)
+      let tasaLeg = '';
+      if (leg.comision && baseLeg > 0) {
+        const tasaConIVA = (Number(leg.comision) / (baseLeg * (1 + IVA_TASA))) * 100;
+        tasaLeg = Math.round(tasaConIVA * 100) / 100;
+      } else {
+        // Buscar en cache
+        const agf = (typeof detectarAGFExacto === 'function' && leg.nemo) ? detectarAGFExacto(leg.nemo) : null;
+        if (agf && leg.corredora) {
+          const t = tasaComision(agf, leg.corredora);
+          if (t) tasaLeg = t;
+        }
+      }
+      
       fieldsHtml += `
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 12px;margin-bottom:8px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-            <span style="background:${opColor};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:var(--mono)">${leg.operacion}</span>
+            <select data-leg-idx="${i}" data-field="operacion" style="background:${opColor};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:var(--mono);border:none;cursor:pointer">
+              <option value="COMPRA"${leg.operacion==='COMPRA'?' selected':''}>COMPRA</option>
+              <option value="VENTA"${leg.operacion==='VENTA'?' selected':''}>VENTA</option>
+            </select>
             <span style="font-size:10px;color:var(--text2);font-family:var(--mono)">#${leg.id}</span>
             <span style="margin-left:auto;font-size:10px;color:var(--text2)">${leg.email_estado === 'enviado' ? '✅' : leg.email_estado === 'fallo' ? '❌' : '🕓'}</span>
           </div>
-          <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:6px">
+          <div style="display:grid;grid-template-columns:1.5fr 2fr 1fr 1fr;gap:6px;margin-bottom:6px">
+            <div class="field"><label>Nemo</label><input data-leg-idx="${i}" data-field="nemo" type="text" value="${leg.nemo||''}"></div>
             <div class="field"><label>Cliente</label><input data-leg-idx="${i}" data-field="cliente" type="text" value="${(leg.cliente||'').replace(/"/g,'&quot;')}"></div>
             <div class="field"><label>RUT</label><input data-leg-idx="${i}" data-field="rut" type="text" value="${leg.rut||''}"></div>
             <div class="field"><label>Cta</label><input data-leg-idx="${i}" data-field="cta" type="text" value="${leg.cta||''}"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:6px;margin-bottom:6px">
             <div class="field"><label>Cantidad</label><input data-leg-idx="${i}" data-field="cantidad" type="number" value="${leg.cantidad||''}"></div>
+            <div class="field"><label>Precio</label><input data-leg-idx="${i}" data-field="precio" type="number" step="0.01" value="${leg.precio||''}"></div>
+            <div class="field"><label>Monto P×Q</label><input data-leg-idx="${i}" data-field="monto" type="number" value="${leg.monto||''}" placeholder="opcional"></div>
+            <div class="field"><label>Cond</label>
+              <select data-leg-idx="${i}" data-field="condicion">
+                <option value=""${!leg.condicion?' selected':''}>—</option>
+                <option value="PH"${leg.condicion==='PH'?' selected':''}>PH</option>
+                <option value="PM"${leg.condicion==='PM'?' selected':''}>PM</option>
+                <option value="CN"${leg.condicion==='CN'?' selected':''}>CN</option>
+              </select>
+            </div>
+            <div class="field"><label>Tasa com %</label><input data-leg-idx="${i}" data-field="tasaComision" type="number" step="0.01" min="0" value="${tasaLeg}" placeholder="0.20"></div>
           </div>
         </div>
       `;
@@ -3524,25 +3777,57 @@ function leerEditorFields() {
   const isGrupo = grupo.length > 1;
   
   if (isGrupo && tabla === 'ordenes') {
-    // Campos compartidos del grupo
-    const sharedUpdates = {
-      nemo: document.getElementById('ed-grupo-nemo')?.value.trim().toUpperCase() || '',
-      corredora: document.getElementById('ed-grupo-corredora')?.value.trim().toUpperCase() || '',
-      condicion: document.getElementById('ed-grupo-condicion')?.value || '',
-      precio: parseFloat(document.getElementById('ed-grupo-precio')?.value) || null,
-      moneda: document.getElementById('ed-grupo-moneda')?.value || 'CLP',
-    };
-    // Por leg: solo cliente/rut/cta/cantidad
+    // CRITERIO ESTRICTO:
+    // - COMPARTIDOS: corredora, fecha, moneda (siempre se propagan a todas las legs)
+    // - POR LEG: operacion, nemo, cliente, rut, cta, cantidad, precio, monto, condicion, tasaComision
+    
+    const sharedUpdates = {};
+    const corrEl = document.getElementById('ed-grupo-corredora');
+    if (corrEl) sharedUpdates.corredora = corrEl.value.trim().toUpperCase();
+    const fechaEl = document.getElementById('ed-grupo-fecha');
+    if (fechaEl && fechaEl.value) sharedUpdates.fecha = fechaEl.value;
+    const monedaEl = document.getElementById('ed-grupo-moneda');
+    if (monedaEl) sharedUpdates.moneda = monedaEl.value;
+    
+    // Por leg: recolectar TODOS los campos editables
     const legUpdates = [];
-    document.querySelectorAll('#editor-modal input[data-leg-idx]').forEach(inp => {
+    const legTasas = []; // para aprender después
+    document.querySelectorAll('#editor-modal input[data-leg-idx], #editor-modal select[data-leg-idx]').forEach(inp => {
       const idx = parseInt(inp.dataset.legIdx);
       const field = inp.dataset.field;
       if (!legUpdates[idx]) legUpdates[idx] = {id: grupo[idx].id};
       let v = inp.value.trim();
-      if (field === 'cantidad' || field === 'monto') v = parseFloat(v) || null;
+      
+      // Campo especial: tasaComision NO se guarda en la tabla, se usa para calcular comision
+      if (field === 'tasaComision') {
+        legTasas[idx] = parsearNumeroChileno(v) || 0;
+        return;
+      }
+      
+      if (field === 'cantidad' || field === 'monto' || field === 'precio') {
+        v = parsearNumeroChileno(v) || null;
+      } else if (field === 'nemo') {
+        v = v.toUpperCase();
+      }
       legUpdates[idx][field] = v;
     });
-    return {isGrupo: true, sharedUpdates, legUpdates};
+    
+    // Calcular comision por leg si hay tasa
+    legUpdates.forEach((upd, idx) => {
+      const tasa = legTasas[idx];
+      if (tasa && tasa > 0) {
+        const cantidad = upd.cantidad || grupo[idx].cantidad || 0;
+        const precio = upd.precio || grupo[idx].precio || 0;
+        const monto = upd.monto || grupo[idx].monto || 0;
+        const base = (cantidad && precio) ? cantidad * precio : monto;
+        if (base > 0) {
+          const r = calcularComision(base, tasa);
+          upd.comision = r.comision + r.iva;
+        }
+      }
+    });
+    
+    return {isGrupo: true, sharedUpdates, legUpdates, _legTasas: legTasas};
   }
   
   if (isGrupo && tabla === 'aportes') {
@@ -3639,6 +3924,21 @@ async function guardarCambiosEditor(enviarEmail) {
         const {error} = await SB.from(tabla).update(legUpdate).eq('id', u.id);
         if (error) { console.error('Error leg', u.id, error); }
       }
+    }
+    
+    // Aprender tasas de comisión por leg (silent fail)
+    if (tabla === 'ordenes' && fields._legTasas) {
+      fields._legTasas.forEach((tasa, idx) => {
+        if (tasa && tasa > 0 && legUpdates[idx]) {
+          const leg = grupo[idx];
+          const nemoFinal = legUpdates[idx].nemo || leg.nemo;
+          const corrFinal = sharedUpdates.corredora || leg.corredora;
+          if (nemoFinal && corrFinal) {
+            const agf = detectarAGFExacto(nemoFinal);
+            if (agf) aprenderTasaComision(agf, corrFinal, tasa).catch(()=>{});
+          }
+        }
+      });
     }
     
     if (enviarEmail) {
@@ -6362,7 +6662,34 @@ async function guardarAbono(p) {
     return;
   }
   
-  botMsg(`✅ Abono guardado · 🕓 email pendiente (próximo turno: notificación al banquero)`);
+  // Aprender relación cliente ↔ banquero (silent fail)
+  aprenderClienteBanquero(p.rut, executor).catch(()=>{});
+  
+  // Decidir si enviar email automáticamente
+  const enviaAuto = debeEnviarEmailAuto(p);
+  const corrKey = (p.corredora||'').toUpperCase().trim();
+  const tieneCorrConfig = !!corredorasConfig[corrKey];
+  const outlookConectado = !!outlookAccount;
+  
+  if (enviaAuto && tieneCorrConfig && outlookConectado) {
+    // Intentar enviar email
+    const r = await enviarEmailAbono(data).catch(e => ({ok:false, msg:e.message}));
+    if (r.ok) {
+      await SB.from('abonos').update({email_enviado:true, email_estado:'enviado'}).eq('id', data.id);
+      botMsg(`✅ Abono guardado y email enviado a ${p.corredora}`);
+    } else {
+      await SB.from('abonos').update({email_estado:'fallo'}).eq('id', data.id);
+      botMsg(`⚠ Abono guardado pero falló el email: ${r.msg||'?'}. Lo podés reintentar desde la tabla.`);
+    }
+  } else {
+    // Razón por la que no se envió
+    let razon = '';
+    if (!enviaAuto) razon = 'email auto OFF';
+    else if (!outlookConectado) razon = 'Outlook no conectado';
+    else if (!tieneCorrConfig) razon = `sin email config para ${p.corredora}`;
+    
+    botMsg(`✅ Abono guardado · 🕓 email pendiente (${razon})`);
+  }
   
   if (isActive('abonos')) await cargarAbonos();
   else showSection('abonos', document.getElementById('nav-abonos'));
@@ -7807,6 +8134,8 @@ async function _confirmarPendingOrderInner(p) {
       }
       
       trackUso(p.nemo, p.cliente);
+      // Aprender relación cliente ↔ banquero (silent fail)
+      aprenderClienteBanquero(p.rut, executor).catch(()=>{});
       
       if (!irAlCorredor) {
         // Sin destino email (corredora sin config o Outlook desconectado) → marcar email_estado apropiado
@@ -8002,7 +8331,11 @@ async function _confirmarPendingOrderInner(p) {
     const nLegs = inserts.length;
     botMsg(`✅ Cruce guardado — ${nLegs} órdenes (${p.vendedores.length} ventas + ${p.compradores.length} compras)${emailMsg}`);
 
-    for (const pt of [...p.vendedores,...p.compradores]) trackUso(p.nemo, pt.nombre);
+    for (const pt of [...p.vendedores,...p.compradores]) {
+      trackUso(p.nemo, pt.nombre);
+      // Aprender relación cliente ↔ banquero (silent fail)
+      aprenderClienteBanquero(pt.rut, executor).catch(()=>{});
+    }
     if (isActive('ordenes')) await cargarOrdenes();
     else showSection('ordenes', document.querySelector('.nav-item'));
 
@@ -8017,6 +8350,9 @@ async function _confirmarPendingOrderInner(p) {
     };
     const {data,error} = await SB.from('aportes').insert(row).select().single();
     if (error) { botMsg(`❌ Error: ${error.message}`); return; }
+    
+    // Aprender relación cliente ↔ banquero (silent fail)
+    aprenderClienteBanquero(p.rut, executor).catch(()=>{});
 
     // Enviar email a corredora si está configurada
     let emailMsgA = '';
