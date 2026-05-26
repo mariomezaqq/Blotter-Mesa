@@ -3071,16 +3071,70 @@ function cerrarEditorModal() {
 }
 
 // Auto-calcula cantidad cuando se completa precio en una operación con monto
+// Helper: parsea números en formato chileno (1.053,47 = 1053.47) o internacional (1053.47 o 17500)
+// HTML type="number" usa siempre "." como decimal, pero por seguridad acepta ambos formatos
+function parsearNumeroChileno(s) {
+  if (s === null || s === undefined || s === '') return 0;
+  if (typeof s === 'number') return s;
+  s = String(s).trim();
+  if (!s) return 0;
+  // Si tiene coma: es formato chileno → punto=miles, coma=decimal
+  if (s.includes(',')) {
+    const cleaned = s.replace(/\./g, '').replace(',', '.');
+    return parseFloat(cleaned) || 0;
+  }
+  // Sin coma: puede ser formato internacional o chileno con solo separador de miles
+  // Heurística: si hay punto Y los dígitos después del último punto son 3 → puntos son separadores de miles
+  // Ejemplo: "17.500" = 17500 (separador miles, no decimal)
+  //          "1053.47" = 1053.47 (decimal)
+  //          "1.053.470" = 1053470 (varios separadores)
+  const partes = s.split('.');
+  if (partes.length === 1) return parseFloat(s) || 0; // no hay punto
+  // Si última parte tiene exactamente 3 dígitos → es separador de miles
+  const ultima = partes[partes.length - 1];
+  if (ultima.length === 3 && /^\d{3}$/.test(ultima) && partes.length >= 2) {
+    return parseFloat(partes.join('')) || 0;
+  }
+  // Si no, es decimal estándar
+  return parseFloat(s) || 0;
+}
+
 function autoCalcCantidad() {
   const precioEl = document.getElementById('ed-precio');
   const cantidadEl = document.getElementById('ed-cantidad');
   const montoEl = document.getElementById('ed-monto-orden');
   if (!precioEl || !cantidadEl || !montoEl) return;
-  const precio = parseFloat(precioEl.value) || 0;
-  const monto = parseFloat(montoEl.value) || 0;
-  const cantidadActual = parseFloat(cantidadEl.value) || 0;
+  const precio = parsearNumeroChileno(precioEl.value);
+  const monto = parsearNumeroChileno(montoEl.value);
+  const cantidadActual = parsearNumeroChileno(cantidadEl.value);
+  
+  // Tasa de comisión (si hay) para calcular cantidad real
+  const tasaEl = document.getElementById('ed-com-tasa');
+  const operacionEl = document.getElementById('ed-operacion');
+  const tasa = tasaEl ? (parsearNumeroChileno(tasaEl.value) / 100) : 0;
+  const esCompra = operacionEl && operacionEl.value === 'COMPRA';
+  
   if (precio > 0 && monto > 0) {
-    const nuevaCantidad = Math.round(monto / precio);
+    let nuevaCantidad;
+    if (tasa > 0) {
+      // COMPRA: monto bruto = lo que paga; cantidad = (bruto - com - IVA) / precio
+      // VENTA: monto neto = lo que recibe; cantidad = (neto + com + IVA) / precio
+      const factor = tasa * (1 + IVA_TASA); // ej: 0.002 * 1.19 = 0.00238
+      if (esCompra) {
+        // bruto = efectivo + efectivo*factor = efectivo*(1+factor) → efectivo = bruto/(1+factor)
+        const efectivo = monto / (1 + factor);
+        nuevaCantidad = Math.round(efectivo / precio);
+      } else {
+        // VENTA: bruto = neto + neto*factor = neto*(1+factor) [porque com se calcula sobre bruto en realidad]
+        // Pero más sano: bruto / precio = cantidad, donde bruto = neto + comisiones sobre bruto
+        // bruto - bruto*factor = neto → bruto*(1-factor) = neto → bruto = neto/(1-factor)
+        const bruto = monto / (1 - factor);
+        nuevaCantidad = Math.round(bruto / precio);
+      }
+    } else {
+      // Sin comisión: cantidad simple
+      nuevaCantidad = Math.round(monto / precio);
+    }
     if (cantidadActual === 0 || cantidadEl.disabled || cantidadActual === monto) {
       cantidadEl.value = nuevaCantidad;
       if (cantidadEl.disabled) {
@@ -3091,42 +3145,90 @@ function autoCalcCantidad() {
       }
     }
   }
-  // Recalcular comisión con la nueva base
+  // Recalcular bloque visual de comisión
   recalcComisionEditor();
 }
 
 function recalcComisionEditor() {
   const tasaEl = document.getElementById('ed-com-tasa');
-  if (!tasaEl) return; // no hay bloque comisión (no es FFII)
+  if (!tasaEl) return;
   
-  const precio = parseFloat(document.getElementById('ed-precio')?.value) || 0;
-  const cantidad = parseFloat(document.getElementById('ed-cantidad')?.value) || 0;
-  const montoP = parseFloat(document.getElementById('ed-monto-orden')?.value) || 0;
-  const tasa = parseFloat(tasaEl.value) || 0;
+  const precio = parsearNumeroChileno(document.getElementById('ed-precio')?.value);
+  const cantidad = parsearNumeroChileno(document.getElementById('ed-cantidad')?.value);
+  const montoP = parsearNumeroChileno(document.getElementById('ed-monto-orden')?.value);
+  const tasa = parsearNumeroChileno(tasaEl.value);
+  const operacionEl = document.getElementById('ed-operacion');
+  const esCompra = operacionEl && operacionEl.value === 'COMPRA';
   
-  // Base = P*Q si están ambos, sino monto
-  const base = (precio > 0 && cantidad > 0) ? precio * cantidad : montoP;
+  // Base de cálculo:
+  // - Si tenemos cantidad y precio → bruto = cantidad × precio (lo que sale/entra a la AGF)
+  // - Si solo monto → ese es el monto que dijo el banquero (interpretación según operación)
+  let bruto = 0, neto = 0;
+  
+  if (cantidad > 0 && precio > 0) {
+    // Caso ideal: tenemos cantidad final → bruto = lo que va a la AGF
+    bruto = cantidad * precio;
+    if (tasa > 0) {
+      const r = calcularComision(bruto, tasa);
+      // COMPRA: efectivo (lo que paga el cliente) = bruto + comisión + IVA
+      // VENTA: neto (lo que recibe el cliente) = bruto − comisión − IVA
+      if (esCompra) {
+        neto = bruto + r.comision + r.iva; // "efectivo" = lo que paga
+      } else {
+        neto = bruto - r.comision - r.iva; // "neto" = lo que recibe
+      }
+    } else {
+      neto = bruto;
+    }
+  } else if (montoP > 0) {
+    // Solo monto sin precio/cantidad: el monto representa lo que dijo el banquero
+    // COMPRA: monto = lo que paga (bruto = monto - comisión backwards)
+    // VENTA: monto = lo que recibe (bruto = monto + comisión backwards)
+    if (tasa > 0) {
+      const factor = (tasa / 100) * (1 + IVA_TASA);
+      if (esCompra) {
+        // monto = efectivo total que paga → bruto = monto / (1+factor)
+        bruto = montoP / (1 + factor);
+        neto = montoP;
+      } else {
+        // monto = neto que recibe → bruto = monto / (1-factor)
+        bruto = montoP / (1 - factor);
+        neto = montoP;
+      }
+    } else {
+      bruto = montoP;
+      neto = montoP;
+    }
+  }
   
   const baseEl = document.getElementById('ed-com-base');
   const comEl = document.getElementById('ed-com-comision');
   const ivaEl = document.getElementById('ed-com-iva');
   const totEl = document.getElementById('ed-com-total');
+  const totLabel = document.getElementById('ed-com-total-label');
   
-  if (base > 0) {
-    baseEl.textContent = '$' + Math.round(base).toLocaleString('es-CL');
+  if (bruto > 0) {
+    baseEl.textContent = '$' + Math.round(bruto).toLocaleString('es-CL');
   } else {
     baseEl.textContent = '—';
   }
   
-  if (base > 0 && tasa > 0) {
-    const r = calcularComision(base, tasa);
+  if (bruto > 0 && tasa > 0) {
+    const r = calcularComision(bruto, tasa);
     comEl.textContent = '$' + r.comision.toLocaleString('es-CL');
     ivaEl.textContent = '$' + r.iva.toLocaleString('es-CL');
-    totEl.textContent = '$' + r.total.toLocaleString('es-CL');
+    totEl.textContent = '$' + Math.round(neto).toLocaleString('es-CL');
+    // Cambiar label según operación
+    if (totLabel) {
+      totLabel.textContent = esCompra ? 'Total que paga el cliente' : 'Total que recibe el cliente';
+    }
   } else {
     comEl.textContent = '—';
     ivaEl.textContent = '—';
-    totEl.textContent = '—';
+    totEl.textContent = bruto > 0 ? '$' + Math.round(bruto).toLocaleString('es-CL') : '—';
+    if (totLabel) {
+      totLabel.textContent = esCompra ? 'Total que paga el cliente' : 'Total que recibe el cliente';
+    }
   }
 }
 
@@ -3246,7 +3348,7 @@ function renderEditorModal() {
     fieldsHtml = `
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
         <div class="field"><label>Operación</label>
-          <select id="ed-operacion">
+          <select id="ed-operacion" onchange="recalcComisionEditor()">
             <option value="COMPRA"${row.operacion==='COMPRA'?' selected':''}>COMPRA</option>
             <option value="VENTA"${row.operacion==='VENTA'?' selected':''}>VENTA</option>
           </select>
@@ -3256,9 +3358,9 @@ function renderEditorModal() {
         <div class="field" style="grid-column:span 2"><label>Cliente</label><input id="ed-cliente" type="text" value="${(row.cliente||'').replace(/"/g,'&quot;')}"></div>
         <div class="field"><label>RUT</label><input id="ed-rut" type="text" value="${row.rut||''}"></div>
         <div class="field"><label>Cuenta</label><input id="ed-cta" type="text" value="${row.cta||''}"></div>
-        <div class="field"><label>Cantidad${(!row.cantidad && row.monto)?' <span style="font-size:9px;color:var(--text2)">(auto)</span>':''}</label><input id="ed-cantidad" type="number" value="${row.cantidad||''}" ${(!row.cantidad && row.monto)?'disabled placeholder="Se calcula con monto/precio" style="opacity:.5;cursor:not-allowed"':''}></div>
+        <div class="field"><label>Cantidad${(!row.cantidad && row.monto)?' <span style="font-size:9px;color:var(--text2)">(auto)</span>':''}</label><input id="ed-cantidad" type="number" value="${row.cantidad||''}" oninput="recalcComisionEditor()" ${(!row.cantidad && row.monto)?'disabled placeholder="Se calcula con monto/precio" style="opacity:.5;cursor:not-allowed"':''}></div>
         <div class="field"><label>Precio</label><input id="ed-precio" type="number" step="0.01" value="${row.precio||''}" oninput="autoCalcCantidad()"></div>
-        <div class="field"><label>Monto (P×Q)${(!row.cantidad && row.monto)?' <span style="font-size:9px;color:var(--accent)">★</span>':''}</label><input id="ed-monto-orden" type="number" value="${row.monto||''}" placeholder="opcional"${(!row.cantidad && row.monto)?' style="border-color:var(--accent)"':''}></div>
+        <div class="field"><label>Monto (P×Q)${(!row.cantidad && row.monto)?' <span style="font-size:9px;color:var(--accent)">★</span>':''}</label><input id="ed-monto-orden" type="number" value="${row.monto||''}" placeholder="opcional" oninput="autoCalcCantidad()"${(!row.cantidad && row.monto)?' style="border-color:var(--accent)"':''}></div>
         <div class="field"><label>Condición</label>
           <select id="ed-condicion">
             <option value=""${!row.condicion?' selected':''}>—</option>
@@ -3300,10 +3402,14 @@ function renderEditorModal() {
             <div style="font-size:11px;font-weight:600;color:var(--accent);letter-spacing:.5px;text-transform:uppercase">// Comisión aplicada</div>
             <div style="font-size:10px;color:var(--text2)">AGF: <strong style="color:var(--text)">${agf||'—'}</strong> · Corredora: <strong style="color:var(--text)">${corr||'—'}</strong></div>
           </div>
-          <div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:10px;align-items:end">
+          <div style="display:grid;grid-template-columns:120px 1fr 1fr 1fr 1fr;gap:10px;align-items:end">
             <div class="field" style="margin:0">
               <label style="font-size:10px">Tasa %</label>
               <input id="ed-com-tasa" type="number" step="0.01" min="0" value="${tasaMostrada}" placeholder="ej: 0.20" oninput="recalcComisionEditor()" style="width:100%">
+            </div>
+            <div style="font-size:11px;color:var(--text2)">
+              <div style="opacity:.7;font-size:9px">Monto bruto (cant×precio)</div>
+              <div id="ed-com-base" style="color:var(--text);font-weight:600;font-size:13px">—</div>
             </div>
             <div style="font-size:11px;color:var(--text2)">
               <div style="opacity:.7;font-size:9px">Comisión neta</div>
@@ -3314,13 +3420,14 @@ function renderEditorModal() {
               <div id="ed-com-iva" style="color:var(--text);font-weight:600;font-size:13px">—</div>
             </div>
             <div style="font-size:11px;color:var(--text2)">
-              <div style="opacity:.7;font-size:9px">Total con comisión</div>
+              <div id="ed-com-total-label" style="opacity:.7;font-size:9px">Total efectivo</div>
               <div id="ed-com-total" style="color:var(--accent);font-weight:700;font-size:14px">—</div>
             </div>
           </div>
-          <div style="margin-top:6px;font-size:10px;color:var(--text2)">
-            <span style="opacity:.7">Base:</span> <span id="ed-com-base">—</span>
-            <span style="margin-left:10px;opacity:.5">(si cambiás la tasa, se recalcula y se guarda al confirmar)</span>
+          <div style="margin-top:6px;font-size:10px;color:var(--text2);opacity:.7">
+            ${row.operacion === 'COMPRA' 
+              ? '💰 COMPRA: el cliente paga el <strong>total efectivo</strong>, parte se va en comisión, el resto compra cuotas al precio'
+              : '💰 VENTA: el cliente vende cuotas al precio (bruto), la comisión se descuenta, recibe el <strong>total neto</strong>'}
           </div>
         </div>`;
       })()}
@@ -3453,10 +3560,10 @@ function leerEditorFields() {
   
   // Individual
   if (tabla === 'ordenes') {
-    const cantidad = parseFloat(document.getElementById('ed-cantidad').value) || null;
-    const precio = parseFloat(document.getElementById('ed-precio').value) || null;
-    let monto = parseFloat(document.getElementById('ed-monto-orden')?.value) || null;
-    // Si tenemos precio + cantidad, recalcular monto (consistencia)
+    const cantidad = parsearNumeroChileno(document.getElementById('ed-cantidad').value) || null;
+    const precio = parsearNumeroChileno(document.getElementById('ed-precio').value) || null;
+    let monto = parsearNumeroChileno(document.getElementById('ed-monto-orden')?.value) || null;
+    // Si tenemos precio + cantidad, recalcular monto BRUTO (cantidad * precio)
     if (precio && cantidad) monto = Math.round(precio * cantidad);
     
     // Comisión: si hay tasa y base, calcular comision con IVA
@@ -3464,11 +3571,11 @@ function leerEditorFields() {
     let comision = null;
     let tasaComisionVal = null;
     if (tasaEl) {
-      const tasa = parseFloat(tasaEl.value) || 0;
+      const tasa = parsearNumeroChileno(tasaEl.value) || 0;
       const base = (precio && cantidad) ? precio * cantidad : (monto || 0);
       if (tasa > 0 && base > 0) {
         const r = calcularComision(base, tasa);
-        comision = r.comision + r.iva; // guardamos comisión + IVA (como estaba antes)
+        comision = r.comision + r.iva; // guardamos comisión + IVA
         tasaComisionVal = tasa;
       }
     }
