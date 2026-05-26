@@ -2571,7 +2571,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
     
     const labelBruto    = isCompra ? 'Monto solicitado' : 'Monto neto a recibir';
     const labelOper     = isCompra ? '(–) Comisión'     : '(+) Comisión';
-    const labelIVA      = isCompra ? '(–) IVA (20%)'    : '(+) IVA (20%)';
+    const labelIVA      = isCompra ? '(–) IVA (19%)'    : '(+) IVA (19%)';
     const labelEfectivo = isCompra ? 'Total invertido'  : 'Bruto a rescatar';
     
     comisionHtml = `<table style="border-collapse:collapse;margin-top:12px;font-family:Arial;font-size:12px">
@@ -3079,13 +3079,10 @@ function autoCalcCantidad() {
   const precio = parseFloat(precioEl.value) || 0;
   const monto = parseFloat(montoEl.value) || 0;
   const cantidadActual = parseFloat(cantidadEl.value) || 0;
-  // Si hay monto + precio: calcular cantidad SIEMPRE (sobreescribe si estaba deshabilitada)
   if (precio > 0 && monto > 0) {
     const nuevaCantidad = Math.round(monto / precio);
-    // Solo cambiar si el campo estaba vacío/deshabilitado, o si la cantidad actual coincide con monto (bug viejo)
     if (cantidadActual === 0 || cantidadEl.disabled || cantidadActual === monto) {
       cantidadEl.value = nuevaCantidad;
-      // Habilitar el campo si estaba deshabilitado
       if (cantidadEl.disabled) {
         cantidadEl.disabled = false;
         cantidadEl.style.opacity = '';
@@ -3093,6 +3090,43 @@ function autoCalcCantidad() {
         cantidadEl.placeholder = '';
       }
     }
+  }
+  // Recalcular comisión con la nueva base
+  recalcComisionEditor();
+}
+
+function recalcComisionEditor() {
+  const tasaEl = document.getElementById('ed-com-tasa');
+  if (!tasaEl) return; // no hay bloque comisión (no es FFII)
+  
+  const precio = parseFloat(document.getElementById('ed-precio')?.value) || 0;
+  const cantidad = parseFloat(document.getElementById('ed-cantidad')?.value) || 0;
+  const montoP = parseFloat(document.getElementById('ed-monto-orden')?.value) || 0;
+  const tasa = parseFloat(tasaEl.value) || 0;
+  
+  // Base = P*Q si están ambos, sino monto
+  const base = (precio > 0 && cantidad > 0) ? precio * cantidad : montoP;
+  
+  const baseEl = document.getElementById('ed-com-base');
+  const comEl = document.getElementById('ed-com-comision');
+  const ivaEl = document.getElementById('ed-com-iva');
+  const totEl = document.getElementById('ed-com-total');
+  
+  if (base > 0) {
+    baseEl.textContent = '$' + Math.round(base).toLocaleString('es-CL');
+  } else {
+    baseEl.textContent = '—';
+  }
+  
+  if (base > 0 && tasa > 0) {
+    const r = calcularComision(base, tasa);
+    comEl.textContent = '$' + r.comision.toLocaleString('es-CL');
+    ivaEl.textContent = '$' + r.iva.toLocaleString('es-CL');
+    totEl.textContent = '$' + r.total.toLocaleString('es-CL');
+  } else {
+    comEl.textContent = '—';
+    ivaEl.textContent = '—';
+    totEl.textContent = '—';
   }
 }
 
@@ -3243,6 +3277,54 @@ function renderEditorModal() {
         <div class="field"><label>Letra</label><input type="text" value="${row.letra_op||''}" disabled style="opacity:.6"></div>
       </div>
       ${(() => {
+        // Bloque comisión: solo para operaciones de FFII (nemos CFI/CFM)
+        const esFondo = row.nemo && /^(CFI|CFM)/i.test(row.nemo);
+        if (!esFondo) return '';
+        
+        const agf = detectarAGFExacto(row.nemo) || '';
+        const corr = (row.corredora||'').toUpperCase().trim();
+        const tasaCache = tasaComision(agf, corr);
+        // Si hay comisión guardada y precio*cantidad, derivar la tasa real aplicada
+        const montoBaseInicial = (row.precio && row.cantidad) ? row.precio * row.cantidad : (row.monto || 0);
+        let tasaInicial = tasaCache;
+        if (row.comision && montoBaseInicial > 0) {
+          // tasa = comision / (montoBase * (1 + IVA_TASA)) * 100
+          // porque row.comision normalmente incluye IVA
+          const tasaConIVA = (Number(row.comision) / (montoBaseInicial * (1 + IVA_TASA))) * 100;
+          tasaInicial = Math.round(tasaConIVA * 100) / 100;
+        }
+        const tasaMostrada = (tasaInicial !== null && tasaInicial !== undefined) ? tasaInicial : '';
+        
+        return `<div id="ed-comision-box" style="margin-top:12px;padding:12px;background:rgba(0,229,150,0.05);border:1px solid rgba(0,229,150,0.3);border-radius:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="font-size:11px;font-weight:600;color:var(--accent);letter-spacing:.5px;text-transform:uppercase">// Comisión aplicada</div>
+            <div style="font-size:10px;color:var(--text2)">AGF: <strong style="color:var(--text)">${agf||'—'}</strong> · Corredora: <strong style="color:var(--text)">${corr||'—'}</strong></div>
+          </div>
+          <div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:10px;align-items:end">
+            <div class="field" style="margin:0">
+              <label style="font-size:10px">Tasa %</label>
+              <input id="ed-com-tasa" type="number" step="0.01" min="0" value="${tasaMostrada}" placeholder="ej: 0.20" oninput="recalcComisionEditor()" style="width:100%">
+            </div>
+            <div style="font-size:11px;color:var(--text2)">
+              <div style="opacity:.7;font-size:9px">Comisión neta</div>
+              <div id="ed-com-comision" style="color:var(--text);font-weight:600;font-size:13px">—</div>
+            </div>
+            <div style="font-size:11px;color:var(--text2)">
+              <div style="opacity:.7;font-size:9px">IVA (19%)</div>
+              <div id="ed-com-iva" style="color:var(--text);font-weight:600;font-size:13px">—</div>
+            </div>
+            <div style="font-size:11px;color:var(--text2)">
+              <div style="opacity:.7;font-size:9px">Total con comisión</div>
+              <div id="ed-com-total" style="color:var(--accent);font-weight:700;font-size:14px">—</div>
+            </div>
+          </div>
+          <div style="margin-top:6px;font-size:10px;color:var(--text2)">
+            <span style="opacity:.7">Base:</span> <span id="ed-com-base">—</span>
+            <span style="margin-left:10px;opacity:.5">(si cambiás la tasa, se recalcula y se guarda al confirmar)</span>
+          </div>
+        </div>`;
+      })()}
+      ${(() => {
         if (row.precio && row.cantidad) return '';
         if (row.monto && !row.cantidad && !row.precio) {
           return `<div style="margin-top:10px;padding:8px 12px;background:rgba(0,229,150,0.1);border:1px solid var(--accent);border-radius:6px;font-size:11px;color:var(--accent)">
@@ -3323,6 +3405,8 @@ function renderEditorModal() {
     </div>
   `;
   document.body.insertAdjacentHTML('beforeend', html);
+  // Pintar valores iniciales de comisión (si el bloque existe)
+  setTimeout(() => { try { recalcComisionEditor(); } catch(e) {} }, 0);
 }
 
 // Lee los inputs del editor. Devuelve:
@@ -3374,7 +3458,22 @@ function leerEditorFields() {
     let monto = parseFloat(document.getElementById('ed-monto-orden')?.value) || null;
     // Si tenemos precio + cantidad, recalcular monto (consistencia)
     if (precio && cantidad) monto = Math.round(precio * cantidad);
-    return {isGrupo: false, updates: {
+    
+    // Comisión: si hay tasa y base, calcular comision con IVA
+    const tasaEl = document.getElementById('ed-com-tasa');
+    let comision = null;
+    let tasaComisionVal = null;
+    if (tasaEl) {
+      const tasa = parseFloat(tasaEl.value) || 0;
+      const base = (precio && cantidad) ? precio * cantidad : (monto || 0);
+      if (tasa > 0 && base > 0) {
+        const r = calcularComision(base, tasa);
+        comision = r.comision + r.iva; // guardamos comisión + IVA (como estaba antes)
+        tasaComisionVal = tasa;
+      }
+    }
+    
+    const updates = {
       operacion: document.getElementById('ed-operacion').value,
       nemo: document.getElementById('ed-nemo').value.trim().toUpperCase(),
       corredora: document.getElementById('ed-corredora').value.trim().toUpperCase(),
@@ -3386,7 +3485,10 @@ function leerEditorFields() {
       monto: monto,
       condicion: document.getElementById('ed-condicion').value,
       moneda: document.getElementById('ed-moneda').value,
-    }};
+    };
+    if (comision !== null) updates.comision = comision;
+    
+    return {isGrupo: false, updates, _tasaComision: tasaComisionVal};
   }
   // Aportes: NO incluir corredora (no es columna en la tabla aportes)
   // La corredora se infiere desde la cuenta del cliente. Guardamos en _corredoraTemp
@@ -3487,6 +3589,14 @@ async function guardarCambiosEditor(enviarEmail) {
     
     const {data, error} = await SB.from(tabla).update(updates).eq('id', id).select().single();
     if (error) { alert('Error guardando: ' + error.message); return; }
+    
+    // Si se cambió la tasa de comisión, aprender al cache (silent fail)
+    if (tabla === 'ordenes' && fields._tasaComision && data.nemo && data.corredora) {
+      const agf = detectarAGFExacto(data.nemo);
+      if (agf) {
+        aprenderTasaComision(agf, data.corredora, fields._tasaComision).catch(()=>{});
+      }
+    }
     
     if (enviarEmail) {
       if (!outlookAccount) { alert('Conectá Outlook primero (Configuración → Outlook)'); return; }
@@ -9240,8 +9350,8 @@ function limpiarSaldo() {
 // - El AGF del nemo se extrae: las letras después de "CFI" o "CFM" hasta antes del "-" o final
 // - Si AGF == corredora → no hay comisión
 // - Si AGF != corredora → buscar tasa aprendida o preguntar
-// - IVA = 20% sobre la comisión
-const IVA_TASA = 0.20;
+// - IVA = 19% sobre la comisión
+const IVA_TASA = 0.19;
 
 function extraerAGF(nemo) {
   if (!nemo) return null;
@@ -9342,7 +9452,7 @@ function preguntarComision(agf, corredora, nemo, montoNeto, onResponse, tasaSuge
         <span style="font-size:13px;color:var(--text2)">%</span>
       </div>
       <div style="font-size:10px;color:var(--text2)">
-        💡 Monto bruto: $${Number(montoNeto).toLocaleString('es-CL')} · IVA 20% sobre la comisión
+        💡 Monto bruto: $${Number(montoNeto).toLocaleString('es-CL')} · IVA 19% sobre la comisión
       </div>
       <div style="display:flex;gap:6px">
         <button id="${uid}-conf" style="flex:1;padding:9px;background:var(--accent);color:#0d1a0f;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:600">${tieneSugerencia ? 'Aplicar' : 'Aplicar comisión'}</button>
