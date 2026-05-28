@@ -763,6 +763,10 @@ tr:hover td{background:var(--surface2)}
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 10h12M8 4v6m-3-3l3 3 3-3"/><rect x="1" y="2" width="14" height="12" rx="1.5"/></svg>
         Abonos
       </div>
+      <div class="nav-item" onclick="showSection('transferencias',this)" id="nav-transferencias">
+        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6h12M10 3l3 3-3 3M14 10H2M6 7l-3 3 3 3"/></svg>
+        Transferencias
+      </div>
       <div class="nav-section">Análisis</div>
       <div class="nav-item" onclick="showSection('resumenes',this)" id="nav-resumenes">
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,12 5,7 8,9 11,4 14,6"/><line x1="2" y1="14" x2="14" y2="14"/></svg>
@@ -1047,6 +1051,29 @@ tr:hover td{background:var(--surface2)}
                   <th>Observaciones</th><th>Ejecutó</th><th>✉</th><th></th>
                 </tr></thead>
                 <tbody id="tb-ab"><tr><td colspan="12" class="empty">Sin abonos registrados</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        </div>
+
+        <!-- ── TRANSFERENCIAS ── -->
+        <div id="sec-transferencias" class="section">
+          <div class="table-wrap">
+            <div id="filtro-bar-tr"></div>
+            <div class="table-toolbar">
+              <input class="table-search" placeholder="Buscar..." oninput="filtrar('tb-tr',this.value)">
+              <span style="font-size:10px;color:var(--text2);font-family:var(--mono);margin-left:auto" id="tr-count">0 transferencias</span>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr>
+                  <th>Fecha</th><th>Cliente</th><th>RUT</th><th>Cta</th><th>Corredora</th>
+                  <th class="right">Monto</th><th>Moneda</th><th>Forma de pago</th>
+                  <th>Observaciones</th><th>Ejecutó</th><th>✉</th><th></th>
+                </tr></thead>
+                <tbody id="tb-tr"><tr><td colspan="12" class="empty">Sin transferencias registradas</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -2994,6 +3021,51 @@ async function cargarAbonos() {
   renderAbonos(ABONOS_CACHE);
 }
 
+// ── TRANSFERENCIAS ────────────────────────────────────────────────
+let TRANSFERENCIAS_CACHE = [];
+let FILTRO_EMAIL_TR = 'todos';
+
+async function cargarTransferencias() {
+  const { data } = await SB.from('transferencias').select('*').order('id',{ascending:false});
+  TRANSFERENCIAS_CACHE = data || [];
+  renderTransferencias(TRANSFERENCIAS_CACHE);
+}
+
+function setFiltroTransferencias(f) {
+  FILTRO_EMAIL_TR = f;
+  renderTransferencias(TRANSFERENCIAS_CACHE);
+}
+
+function renderTransferencias(data) {
+  document.getElementById('tr-count').textContent = data.length + ' transferencias';
+  const cuentas = contadoresEmail(data);
+  const filtroBarHost = document.getElementById('filtro-bar-tr');
+  if (filtroBarHost) filtroBarHost.innerHTML = filtroEmailBar(cuentas, FILTRO_EMAIL_TR, 'setFiltroTransferencias');
+  const visible = aplicarFiltroEmail(data, FILTRO_EMAIL_TR, 'transferencias');
+  const tb = document.getElementById('tb-tr');
+  if (!visible.length) {
+    tb.innerHTML = `<tr><td colspan="12" class="empty">${data.length?'Sin transferencias con este filtro':'Sin transferencias registradas'}</td></tr>`;
+    return;
+  }
+  tb.innerHTML = visible.map(t => {
+    const fechaCorta = t.fecha ? t.fecha.split('-').reverse().join('/') : '—';
+    return `<tr ondblclick="abrirEditorOperacion('transferencias',${t.id})" style="cursor:pointer" title="Doble click para editar">
+      <td class="mono" style="font-size:11px">${fechaCorta}</td>
+      <td>${t.cliente||'—'}</td>
+      <td class="mono">${t.rut||'—'}</td>
+      <td class="mono">${t.cta||'—'}</td>
+      <td class="mono">${t.corredora||'—'}</td>
+      <td class="right mono" style="font-weight:600;color:var(--venta)">${t.monto?'$'+Number(t.monto).toLocaleString('es-CL'):'—'}</td>
+      <td style="font-size:11px">${t.moneda||'CLP'}</td>
+      <td style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis">${t.forma_pago||'—'}</td>
+      <td style="font-size:10px;color:var(--text2);max-width:140px;overflow:hidden;text-overflow:ellipsis">${t.observaciones||'—'}</td>
+      <td><span class="executor-tag">${t.ejecutado_por||'—'}</span></td>
+      <td style="text-align:center" onclick="event.stopPropagation()">${emailBadgeHtml(t,'transferencias')}</td>
+      <td onclick="event.stopPropagation()"><button class="btn sm danger" onclick="eliminar('transferencias',${t.id},'tb-tr')">✕</button></td>
+    </tr>`;
+  }).join('');
+}
+
 function setFiltroAbonos(f) {
   FILTRO_EMAIL_AB = f;
   renderAbonos(ABONOS_CACHE);
@@ -3080,6 +3152,7 @@ async function showSection(name, el) {
   else if(name==='aportes') await cargarAportes();
   else if(name==='saldos') await cargarSaldos();
   else if(name==='abonos') await cargarAbonos();
+  else if(name==='transferencias') await cargarTransferencias();
   else if(name==='clientes') renderClientes();
   else if(name==='banqueros') {
     await loadBanqueros();
@@ -4960,6 +5033,10 @@ function handleChatInput(text) {
       handleMissingAbono(text.trim());
       return;
 
+    case 'await_missing_transf':
+      handleMissingTransf(text.trim());
+      return;
+
     default:
       showTyping();
       setTimeout(() => { removeTyping(); processBloque(text.trim()); }, 350);
@@ -5512,6 +5589,9 @@ function processCommand(text) {
   if (/\b(ABONO|ABONA|ABONÉ|ABONAR|DEPOSITO|DEPÓSITO|DEPOSITA|DEPOSITÉ|DEPOSITAR)\b/i.test(text)) { parseAbono(text); return; }
   if (/\b(APORTE|APORTA[RS]?|APORTO|APORTÓ|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
   if (/\b(RESCATE|RESCATAR)\b/i.test(text)) { parseAporte(text,'Rescate'); return; }
+  // Transferencia a cta cte = instrucción bancaria a corredora
+  // Diferencia de "transferencia" como forma de pago de un aporte
+  if (/\b(TRANSFERENCIA|TRANSFER)\b/i.test(text) && /\b(CTA|CUENTA|CTE|CORRIENTE)\b/i.test(text)) { parseTransferencia(text); return; }
   if (/\b(TRANSFERENCIA)\b/i.test(text)) { parseAporte(text,'Transferencia'); return; }
   if (/\b(COMPRA|COMPRAR|COMPRO|COMPRÉ|COMPRÁ)\b/i.test(text)) { parseOrden(text,'COMPRA'); return; }
   if (/\b(VENTA|VENDER|VENDO|VENDE|VENDÉ|VENDED)\b/i.test(text)) { parseOrden(text,'VENTA'); return; }
@@ -6500,6 +6580,355 @@ function handleCtaCruce(text) {
 
 // ═══════════════════════════════════════════════════════════
 // PARSER DE ABONOS (depósitos que llegan a una cuenta)
+// ═══════════════════════════════════════════════════════════
+// TRANSFERENCIAS A CTA CTE
+// Detecta: "transfer 46 palos a Inversiones Invercorp cta 0 LV"
+//          "transferencia a cta cte 20 millones a Mario Meza MBI"
+// ═══════════════════════════════════════════════════════════
+function parseTransferencia(text) {
+  // ── Monto ────────────────────────────────────────────────────
+  const montoM = text.match(/(\d[\d.,]*)\s*(palos?|millones?|mm?\b|lucas?|mil)/i);
+  let monto = null;
+  if (montoM) monto = parseMontoNatural(montoM[0]);
+  else {
+    const n = text.match(/\b(\d[\d.,]{3,})\b/);
+    if (n) monto = parseMontoNatural(n[1]);
+  }
+
+  // ── Cuenta ───────────────────────────────────────────────────
+  let cta = '';
+  const ctaM = text.match(/(?:cta\.?|cuenta|sec(?:uencia)?)\s*[:\.]?\s*(\d+)/i);
+  if (ctaM) cta = ctaM[1];
+
+  // ── Moneda ───────────────────────────────────────────────────
+  let moneda = 'CLP';
+  if (/\b(usd|dolar|dólar|us\$)/i.test(text)) moneda = 'USD';
+  else if (/\b(uf)\b/i.test(text)) moneda = 'UF';
+
+  // ── Forma de pago ────────────────────────────────────────────
+  let formaPago = 'TRANSFERENCIA A CTA CTE';
+  if (/transfer\s+cta\s+cte|transferencia\s+a?\s+cta\s+cte|transferencia\s+a?\s+cuenta\s+corriente/i.test(text)) {
+    formaPago = 'TRANSFERENCIA A CTA CTE';
+  } else if (/transfer\s+cta\s+ahorro|transferencia\s+a?\s+cuenta\s+ahorro/i.test(text)) {
+    formaPago = 'TRANSFERENCIA A CTA AHORRO';
+  } else if (/transfer/i.test(text)) {
+    formaPago = 'TRANSFERENCIA A CTA CTE';
+  }
+
+  // ── Corredora ────────────────────────────────────────────────
+  let corredora = '';
+  const corrM = text.match(/(?:por|v[ií]a|corredora)\s+(LV|MBI|BTG|SMB|BCI|BICE|ITAU|SANTANDER|CREDICORP|SECURITY|VALUES|RENTA4|LARRAIN|LC)\b/i);
+  if (corrM) {
+    corredora = corrM[1].toUpperCase();
+  } else {
+    const corrLoose = text.match(/\b(LV|MBI|BTG|SMB|BCI|BICE|ITAU|SANTANDER|CREDICORP|SECURITY|VALUES|RENTA4|LARRAIN|LC)\b/i);
+    if (corrLoose) corredora = corrLoose[1].toUpperCase();
+  }
+
+  // ── Cliente ──────────────────────────────────────────────────
+  const clientResult = resolveCliente(text);
+
+  const parsed = {
+    type: 'transferencia',
+    monto, cta, moneda, forma_pago: formaPago, corredora,
+    cliente: clientResult?.nombre || '',
+    rut:     clientResult?.rut    || '',
+    clienteResult: clientResult,
+    observaciones: '',
+    ccBanqueros: window._pendingCCBanqueros || null
+  };
+  window._pendingCCBanqueros = null;
+
+  if (!clientResult || clientResult.unknown) {
+    const name = clientResult?.nombre || extractNameCandidate(text) || '';
+    parsed.cliente = name;
+    chatContext = {state:'await_new_client_confirm', parsed};
+    const msgTxt = clientResult?.rut
+      ? `RUT <strong>${clientResult.rut}</strong> no está registrado. ¿Lo agregamos?`
+      : `No encontré a <strong>${name||'ese cliente'}</strong> en la base. ¿Es un cliente nuevo?`;
+    botMsg(`${msgTxt}
+      <div class="card-box" style="margin-top:8px">
+        <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Cliente no registrado</div>
+        <div style="font-size:12px;margin-bottom:8px">Nombre detectado: <strong>${name}</strong></div>
+        <div style="display:flex;gap:6px">
+          <button class="btn sm ok" onclick="confirmarNuevoCliente()">Sí, agregar</button>
+          <button class="btn sm danger" onclick="botMsg('Cancelado.');chatContext={}">No, cancelar</button>
+        </div>
+      </div>`);
+    return;
+  }
+
+  checkMissingTransferencia(parsed);
+}
+
+function checkMissingTransferencia(parsed) {
+  // Cuenta obligatoria
+  if (!parsed.cta || !/^\d{1,4}$/.test(parsed.cta)) {
+    const cliente = DB_CLIENTES.find(c => c.rut === parsed.rut);
+    const cuentas = (cliente?.cuentas || []).filter(c => c.cta && /^\d{1,4}$/.test(c.cta));
+    const ctasFiltradas = parsed.corredora
+      ? cuentas.filter(c => (c.corredora||'').toUpperCase() === parsed.corredora.toUpperCase())
+      : cuentas;
+
+    if (ctasFiltradas.length === 1) {
+      parsed.cta = ctasFiltradas[0].cta;
+      if (!parsed.corredora) parsed.corredora = (ctasFiltradas[0].corredora||'').toUpperCase();
+    } else if (ctasFiltradas.length > 1) {
+      chatContext = {state:'await_missing_transf', field:'cta', parsed};
+      const opts = ctasFiltradas.map(c =>
+        `<button class="btn sm" onclick="selectCtaTransfBtn('${c.cta}','${(c.corredora||'').toUpperCase()}')">Cta. ${c.cta} · ${c.corredora||'?'}</button>`
+      ).join('');
+      botMsg(`${parsed.cliente} tiene ${ctasFiltradas.length} cuentas. ¿Cuál usamos?<br><div class="btn-row">${opts}</div>`);
+      return;
+    } else {
+      chatContext = {state:'await_missing_transf', field:'cta', parsed};
+      botMsg(`${parsed.cliente} no tiene cuenta registrada. ¿Cuál es el número? (ej: <em>0</em>, <em>1</em>, <em>55</em>)`);
+      return;
+    }
+  }
+
+  // Corredora obligatoria
+  if (!parsed.corredora) {
+    chatContext = {state:'await_missing_transf', field:'corredora', parsed};
+    botMsg(`¿Por qué corredora va la transferencia? (ej: <em>LV</em>, <em>MBI</em>, <em>BTG</em>)`);
+    return;
+  }
+
+  // Monto obligatorio
+  if (!parsed.monto || parsed.monto <= 0) {
+    chatContext = {state:'await_missing_transf', field:'monto', parsed};
+    botMsg(`¿Cuánto es la transferencia? (ej: <em>46 palos</em>, <em>$46.000.000</em>)`);
+    return;
+  }
+
+  showTransferenciaConfirm(parsed);
+}
+
+function selectCtaTransfBtn(cta, corredora) {
+  if (!chatContext?.parsed) return;
+  chatContext.parsed.cta = cta;
+  if (corredora) chatContext.parsed.corredora = corredora;
+  chatContext = {};
+  const p = chatContext?.parsed || window._lastTransfParsed;
+  // Buscar el parsed guardado
+  const allCtx = chatContext;
+  // workaround: guardar en variable temporal
+  window._lastTransfParsed = null;
+  checkMissingTransferencia({...chatContext?.parsed || {}});
+}
+
+// Selector de cuenta para transferencias
+window.selectCtaTransfBtn = function(cta, corredora) {
+  if (!chatContext?.parsed) return;
+  const p = chatContext.parsed;
+  chatContext = {};
+  p.cta = cta;
+  if (corredora) p.corredora = corredora;
+  checkMissingTransferencia(p);
+};
+
+function showTransferenciaConfirm(p) {
+  chatContext = {state:'await_confirm', pendingType:'transferencia'};
+  pendingOrder = p;
+  const montoFmt = p.monto ? '$' + Number(p.monto).toLocaleString('es-CL') : '—';
+  botMsg(`¿Confirmar esta instrucción?
+    <div class="confirm-card">
+      <div class="confirm-title">TRANSFERENCIA A CTA CTE</div>
+      <div class="confirm-row"><span>Cliente</span><span>${p.cliente||'—'}</span></div>
+      <div class="confirm-row"><span>RUT</span><span class="mono">${p.rut||'—'}</span></div>
+      <div class="confirm-row"><span>Cuenta</span><span class="mono">${p.cta||'—'}</span></div>
+      <div class="confirm-row"><span>Corredora</span><span>${p.corredora||'—'}</span></div>
+      <div class="confirm-row"><span>Monto</span><span class="mono" style="color:var(--venta);font-weight:700">${montoFmt}</span></div>
+      <div class="confirm-row"><span>Moneda</span><span>${p.moneda||'CLP'}</span></div>
+      <div class="confirm-row"><span>Forma de pago</span><span style="font-size:10px">${p.forma_pago||'TRANSFERENCIA A CTA CTE'}</span></div>
+      <div class="confirm-row"><span>Ejecuta</span><span>${CURRENT_USER?.nombre||'—'}</span></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn ok" onclick="confirmarPendingOrder()">✓ Confirmar</button>
+      <button class="btn danger" onclick="botMsg('Cancelado. ¿Qué más necesitás?');chatContext={}">✕ Cancelar</button>
+    </div>`);
+}
+
+async function guardarTransferencia(p) {
+  const executor = CURRENT_USER?.nombre || 'Sistema';
+  const letraTransf = await siguienteLetraDelDia(todayStr(), 'transferencias').catch(() => 'A');
+
+  const row = {
+    fecha:        todayStr(),
+    rut:          p.rut,
+    cliente:      p.cliente,
+    cta:          p.cta || '0',
+    corredora:    p.corredora || '',
+    monto:        p.monto || null,
+    moneda:       p.moneda || 'CLP',
+    forma_pago:   p.forma_pago || 'TRANSFERENCIA A CTA CTE',
+    observaciones: p.observaciones || '',
+    ejecutado_por: executor,
+    letra_op:     letraTransf,
+    email_enviado: false,
+    email_estado: 'pendiente'
+  };
+
+  const {data, error} = await SB.from('transferencias').insert(row).select().single();
+  if (error) {
+    botMsg(`❌ Error guardando transferencia: ${error.message}`);
+    return;
+  }
+
+  // Aprender relación cliente ↔ banquero
+  aprenderClienteBanquero(p.rut, executor).catch(()=>{});
+
+  // Email automático
+  const enviaAuto = debeEnviarEmailAuto(p);
+  const corrKey = (p.corredora||'').toUpperCase().trim();
+  const tieneCorrConfig = !!corredorasConfig[corrKey];
+  const outlookConectado = !!outlookAccount;
+
+  if (enviaAuto && tieneCorrConfig && outlookConectado) {
+    const r = await enviarEmailTransferencia(data).catch(e => ({ok:false, msg:e.message}));
+    if (r.ok) {
+      await SB.from('transferencias').update({email_enviado:true, email_estado:'enviado'}).eq('id', data.id);
+      botMsg(`✅ Transferencia guardada y email enviado a ${p.corredora}`);
+    } else {
+      await SB.from('transferencias').update({email_estado:'fallo'}).eq('id', data.id);
+      botMsg(`⚠ Transferencia guardada pero falló el email: ${r.msg||'?'}`);
+    }
+  } else {
+    let razon = '';
+    if (!enviaAuto) razon = 'email auto OFF';
+    else if (!outlookConectado) razon = 'Outlook no conectado';
+    else if (!tieneCorrConfig) razon = `sin email config para ${p.corredora}`;
+    botMsg(`✅ Transferencia guardada · 🕓 email pendiente (${razon})`);
+  }
+
+  if (isActive('transferencias')) await cargarTransferencias();
+  else showSection('transferencias', document.getElementById('nav-transferencias'));
+}
+
+// ═══════════════════════════════════════════════════════════
+// EMAIL PARA TRANSFERENCIAS (a corredora para instrucción bancaria)
+// ═══════════════════════════════════════════════════════════
+async function enviarEmailTransferencia(datos) {
+  const token = await getOutlookToken();
+  if (!token) return { ok:false, msg:'No autenticado en Outlook' };
+
+  const corrKey = (datos.corredora||'').toUpperCase().trim();
+  let destino = corredorasConfig[corrKey];
+  if (!destino) {
+    const keys = Object.keys(corredorasConfig);
+    const partial = keys.find(k => k.includes(corrKey) || corrKey.includes(k));
+    if (partial) destino = corredorasConfig[partial];
+  }
+  if (!destino) return { ok:false, msg: `Sin email para "${datos.corredora}"` };
+
+  const fecha = datos.fecha || todayStr();
+  const [yyyy,mm,dd] = fecha.split('-');
+  const fechaCorta = `${dd}-${mm}`;
+  const montoFmt = '$' + Number(datos.monto||0).toLocaleString('es-CL') + ',00';
+  const subj = `**ORDEN ${fechaCorta} ${datos.letra_op||''}** Transferencia a Cta Cte - ${datos.cliente} ${datos.rut}`;
+
+  const userName = CURRENT_USER?.nombre?.split(' ')[0] || '';
+  const contactName = (destino.split('@')[0]||'').split('.')[0];
+  const saludo = contactName ? `Hola ${contactName.charAt(0).toUpperCase()+contactName.slice(1)},` : 'Hola,';
+
+  const tableHtml = `<table style="border-collapse:collapse;width:100%;max-width:700px">
+    <thead>
+      <tr style="background:#1f3a5f;color:#fff">
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Fecha</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Rut</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:center">Cuenta</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Cliente</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Moneda</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Moneda</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:right">Monto</th>
+        <th style="padding:6px 10px;border:1px solid #1f3a5f;font-size:12px;font-family:Arial;text-align:left">Forma de pago</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${fecha}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.rut||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:center">${datos.cta||'0'}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.cliente||''}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.moneda||'CLP'}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial">${datos.moneda||'CLP'}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;text-align:right;font-weight:600">${montoFmt}</td>
+        <td style="padding:6px 10px;border:1px solid #d0d7de;font-size:12px;font-family:Arial;background:#00e5ff22"><strong>${datos.forma_pago||'TRANSFERENCIA A CTA CTE'}</strong></td>
+      </tr>
+    </tbody>
+  </table>`;
+
+  const htmlBody = `<html><body style="font-family:Arial,sans-serif;padding:20px;color:#1f2328">
+    <p style="margin:0 0 16px">${saludo}</p>
+    <p style="margin:0 0 16px">Favor realizar transferencia, según detalle.</p>
+    <p style="margin:0 0 16px">Gracias</p>
+    ${tableHtml}
+    ${datos.observaciones ? `<p style="margin:16px 0 0;font-size:12px;color:#57606a"><strong>Observaciones:</strong> ${datos.observaciones}</p>` : ''}
+    <p style="margin:24px 0 0">Saludos,</p>
+    ${userName ? `<p style="margin:4px 0 0">${userName}</p>` : ''}
+  </body></html>`;
+
+  const ccList = [];
+  const seen = new Set();
+  const ejecutorEmail = getEjecutorEmail(datos.ejecutado_por);
+  if (ejecutorEmail && ejecutorEmail !== destino) {
+    ccList.push({emailAddress:{address: ejecutorEmail}});
+    seen.add(ejecutorEmail.toLowerCase());
+  }
+  if (CURRENT_USER?.email && CURRENT_USER.email !== destino && !seen.has(CURRENT_USER.email.toLowerCase())) {
+    ccList.push({emailAddress:{address: CURRENT_USER.email}});
+    seen.add(CURRENT_USER.email.toLowerCase());
+  }
+
+  const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method:'POST',
+    headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
+    body: JSON.stringify({
+      message:{
+        subject: subj,
+        body:{contentType:'HTML',content:htmlBody},
+        toRecipients:[{emailAddress:{address:destino}}],
+        ccRecipients: ccList
+      },
+      saveToSentItems:true
+    })
+  });
+  if (r.ok||r.status===202) return {ok:true};
+  const err=await r.json().catch(()=>({}));
+  return {ok:false, msg:err.error?.message||`HTTP ${r.status}`};
+}
+
+// ─────────────────────────────────────────────────────────────
+// Manejo de campos faltantes en transferencias
+// ─────────────────────────────────────────────────────────────
+function handleMissingTransf(text) {
+  if (!chatContext?.parsed) return false;
+  const parsed = chatContext.parsed;
+  const field = chatContext.field;
+
+  if (field === 'cta') {
+    if (!/^\d{1,4}$/.test(text.trim())) {
+      botMsg('⚠ Cuenta inválida. Solo números, máx 4 dígitos (ej: <em>0</em>, <em>1</em>, <em>55</em>).');
+      return true;
+    }
+    parsed.cta = text.trim();
+  } else if (field === 'corredora') {
+    parsed.corredora = text.trim().toUpperCase();
+  } else if (field === 'monto') {
+    const m = parseMontoNatural(text);
+    if (!m || m <= 0) {
+      botMsg('⚠ Monto inválido. Ingresá un monto (ej: <em>46 palos</em>, <em>$46.000.000</em>).');
+      return true;
+    }
+    parsed.monto = m;
+  } else {
+    return false;
+  }
+  chatContext = {};
+  checkMissingTransferencia(parsed);
+  return true;
+}
+
 // ═══════════════════════════════════════════════════════════
 // Ejemplos:
 //   "abona 500mil a Mario Meza cta 1234 transferencia banco chile"
@@ -8461,6 +8890,8 @@ async function _confirmarPendingOrderInner(p) {
     if (isActive('saldos')) await cargarSaldos();
   } else if (p.type === 'abono') {
     await guardarAbono(p);
+  } else if (p.type === 'transferencia') {
+    await guardarTransferencia(p);
   }
 }
 
