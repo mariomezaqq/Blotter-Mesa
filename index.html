@@ -3341,12 +3341,17 @@ function autoCalcCantidad() {
       nuevaCantidad = Math.round(monto / precio);
     }
     
-    // Condiciones para actualizar la cantidad:
-    // 1. Campo deshabilitado (AUTO)
-    // 2. Estaba vacío/cero
-    // 3. La cantidad actual coincide con el monto (bug viejo: cantidad=monto)
-    // 4. La cantidad actual es mayor que el monto (imposible en FFMM con precios < 1, pero detecta bugs)
-    const cantidadEsInvalida = cantidadActual > monto; // cuotas no pueden superar el monto en CLP
+    // Condiciones para recalcular la cantidad:
+    // 1. Campo deshabilitado (AUTO) — siempre recalcular
+    // 2. Vacío/cero
+    // 3. Coincide exactamente con el monto (bug viejo: cantidad=monto)
+    // 4. cantidad > monto (imposible)
+    // 5. NUEVO: cantidad × precio está muy lejos del monto declarado
+    //    Si el total calculado difiere en más de 10× del monto declarado, la cantidad es basura
+    const totalCalculado = cantidadActual > 0 && precio > 0 ? cantidadActual * precio : 0;
+    const cantidadEsInvalida = cantidadActual > monto
+      || (totalCalculado > 0 && monto > 0 && (totalCalculado / monto > 5 || monto / totalCalculado > 5));
+    
     if (cantidadEl.disabled || cantidadActual === 0 || cantidadActual === monto || cantidadEsInvalida) {
       cantidadEl.value = nuevaCantidad;
       if (cantidadEl.disabled) {
@@ -3390,7 +3395,9 @@ function autoCalcCantidadLeg(idx) {
 
   // Solo actualizar si la cantidad actual es vacía, cero, igual al monto (bug viejo), o imposiblemente grande
   const cantActual = parsearNumeroChileno(cantidadEl.value);
-  const cantidadImposible = monto > 0 && cantActual > monto; // cuotas nunca pueden superar el monto CLP
+  const totalCalculado = cantActual > 0 && precio > 0 ? cantActual * precio : 0;
+  const cantidadImposible = cantActual > monto
+    || (totalCalculado > 0 && monto > 0 && (totalCalculado / monto > 5 || monto / totalCalculado > 5));
   if (cantActual === 0 || cantActual === monto || cantidadImposible) {
     cantidadEl.value = nuevaCantidad;
   }
@@ -3805,14 +3812,17 @@ function renderEditorModal() {
   setTimeout(() => {
     try { recalcComisionEditor(); } catch(e) {}
     // Auto-calcular cantidades en legs que tienen precio+monto pero no cantidad,
-    // o tienen cantidades imposibles (mayor que el monto, lo que indica bug previo)
+    // o tienen cantidades imposibles (cantidad > monto o total P×Q muy lejos del monto)
     document.querySelectorAll('[id^="leg-cantidad-"]').forEach(el => {
       const idx = parseInt(el.id.replace('leg-cantidad-', ''));
       const cantActual = parsearNumeroChileno(el.value);
       const montoEl = document.getElementById(`leg-monto-${idx}`);
+      const precioEl = document.getElementById(`leg-precio-${idx}`);
       const monto = montoEl ? parsearNumeroChileno(montoEl.value) : 0;
-      // Recalcular si: vacío, cero, o cantidad > monto (imposible para FFMM con precio > 1)
-      const cantidadImposible = monto > 0 && cantActual > monto;
+      const precio = precioEl ? parsearNumeroChileno(precioEl.value) : 0;
+      const totalCalc = cantActual > 0 && precio > 0 ? cantActual * precio : 0;
+      const cantidadImposible = (monto > 0 && cantActual > monto)
+        || (totalCalc > 0 && monto > 0 && (totalCalc / monto > 5 || monto / totalCalc > 5));
       if (!el.value || el.value === '0' || cantidadImposible) {
         try { autoCalcCantidadLeg(idx); } catch(e) {}
       }
@@ -3972,10 +3982,12 @@ async function guardarCambiosEditor(enviarEmail) {
       const legUpdate = {...u};
       delete legUpdate.id;
       
-      // Sanidad: si cantidad > monto, es un bug de cálculo → recalcular antes de guardar
+      // Sanidad: si cantidad×precio difiere mucho del monto, recalcular antes de guardar
       if (legUpdate.cantidad && legUpdate.monto && legUpdate.precio) {
-        if (legUpdate.cantidad > legUpdate.monto) {
-          // Recalcular con los datos correctos
+        const totalCalc = legUpdate.cantidad * legUpdate.precio;
+        const ratio = totalCalc / legUpdate.monto;
+        if (ratio > 5 || ratio < 0.2 || legUpdate.cantidad > legUpdate.monto) {
+          // Cantidad claramente errónea → recalcular
           legUpdate.cantidad = Math.round(legUpdate.monto / legUpdate.precio);
         }
       }
