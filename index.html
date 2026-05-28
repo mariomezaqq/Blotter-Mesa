@@ -3388,9 +3388,10 @@ function autoCalcCantidadLeg(idx) {
     nuevaCantidad = Math.round(monto / precio);
   }
 
-  // Solo actualizar si la cantidad actual es vacía, cero, o claramente inválida
+  // Solo actualizar si la cantidad actual es vacía, cero, igual al monto (bug viejo), o imposiblemente grande
   const cantActual = parsearNumeroChileno(cantidadEl.value);
-  if (cantActual === 0 || cantActual === monto || cantActual > monto) {
+  const cantidadImposible = monto > 0 && cantActual > monto; // cuotas nunca pueden superar el monto CLP
+  if (cantActual === 0 || cantActual === monto || cantidadImposible) {
     cantidadEl.value = nuevaCantidad;
   }
 }
@@ -3803,10 +3804,16 @@ function renderEditorModal() {
   // Y calcular cantidades faltantes en legs del grupo
   setTimeout(() => {
     try { recalcComisionEditor(); } catch(e) {}
-    // Auto-calcular cantidades en legs que tienen precio+monto pero no cantidad
+    // Auto-calcular cantidades en legs que tienen precio+monto pero no cantidad,
+    // o tienen cantidades imposibles (mayor que el monto, lo que indica bug previo)
     document.querySelectorAll('[id^="leg-cantidad-"]').forEach(el => {
       const idx = parseInt(el.id.replace('leg-cantidad-', ''));
-      if (!el.value || el.value === '0') {
+      const cantActual = parsearNumeroChileno(el.value);
+      const montoEl = document.getElementById(`leg-monto-${idx}`);
+      const monto = montoEl ? parsearNumeroChileno(montoEl.value) : 0;
+      // Recalcular si: vacío, cero, o cantidad > monto (imposible para FFMM con precio > 1)
+      const cantidadImposible = monto > 0 && cantActual > monto;
+      if (!el.value || el.value === '0' || cantidadImposible) {
         try { autoCalcCantidadLeg(idx); } catch(e) {}
       }
     });
@@ -3964,6 +3971,15 @@ async function guardarCambiosEditor(enviarEmail) {
       if (!u || !u.id) continue;
       const legUpdate = {...u};
       delete legUpdate.id;
+      
+      // Sanidad: si cantidad > monto, es un bug de cálculo → recalcular antes de guardar
+      if (legUpdate.cantidad && legUpdate.monto && legUpdate.precio) {
+        if (legUpdate.cantidad > legUpdate.monto) {
+          // Recalcular con los datos correctos
+          legUpdate.cantidad = Math.round(legUpdate.monto / legUpdate.precio);
+        }
+      }
+      
       if (Object.keys(legUpdate).length) {
         const {error} = await SB.from(tabla).update(legUpdate).eq('id', u.id);
         if (error) { console.error('Error leg', u.id, error); }
