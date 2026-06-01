@@ -462,6 +462,122 @@ tr:hover td{background:var(--surface2)}
 .cm-bubble{padding:9px 12px;font-size:12px;line-height:1.55;max-width:94%}
 .cm-meta{font-size:10px;color:var(--text3);font-family:var(--mono);padding:0 4px}
 .cm.user .cm-meta{text-align:right}
+
+/* ── CHAT HISTORIAL ────────────────────────────────── */
+.ch-sesion {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r2);
+  overflow: hidden;
+}
+.ch-sesion-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.ch-sesion-header:hover { background: var(--surface3); }
+.ch-sesion-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+  flex-shrink: 0;
+}
+.ch-sesion-info { flex: 1; min-width: 0; }
+.ch-sesion-usuario { font-size: 12px; font-weight: 600; }
+.ch-sesion-meta { font-size: 10px; color: var(--text2); font-family: var(--mono); }
+.ch-sesion-stats {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--text2);
+}
+.ch-sesion-stats .stat-op {
+  color: var(--accent);
+  font-weight: 600;
+}
+.ch-sesion-toggle {
+  font-size: 10px;
+  color: var(--text2);
+  transition: transform 0.2s;
+}
+.ch-sesion-toggle.open { transform: rotate(180deg); }
+.ch-mensajes { display: flex; flex-direction: column; gap: 6px; padding: 12px; }
+.ch-mensajes.collapsed { display: none; }
+.ch-msg {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ch-msg.user { flex-direction: row-reverse; }
+.ch-msg-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.ch-msg.user .ch-msg-avatar { background: var(--accent); color: var(--bg); }
+.ch-msg.bot .ch-msg-avatar { background: var(--surface3); color: var(--text2); font-size: 8px; }
+.ch-msg-body { max-width: 80%; }
+.ch-msg.user .ch-msg-body { align-items: flex-end; display: flex; flex-direction: column; }
+.ch-msg-bubble {
+  padding: 7px 10px;
+  border-radius: 4px 10px 10px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  word-break: break-word;
+}
+.ch-msg.user .ch-msg-bubble {
+  background: var(--accent-dim);
+  border-color: var(--accent2);
+  border-radius: 10px 4px 10px 10px;
+}
+.ch-msg-meta {
+  font-size: 9px;
+  color: var(--text3);
+  font-family: var(--mono);
+  margin-top: 2px;
+  padding: 0 3px;
+}
+.ch-msg.user .ch-msg-meta { text-align: right; }
+.ch-op-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 3px 8px;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+.ch-op-tag:hover { border-color: var(--accent); background: var(--accent-dim); }
 /* Confirm card inside chat */
 .chat-confirm{
   background:var(--surface3);border:1px solid var(--border2);
@@ -766,6 +882,10 @@ tr:hover td{background:var(--surface2)}
       <div class="nav-item" onclick="showSection('transferencias',this)" id="nav-transferencias">
         <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6h12M10 3l3 3-3 3M14 10H2M6 7l-3 3 3 3"/></svg>
         Transferencias
+      </div>
+      <div class="nav-item" onclick="showSection('chat-historial',this)" id="nav-chat-historial">
+        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 3V3a1 1 0 0 1 1-1z"/></svg>
+        Chat
       </div>
       <div class="nav-section">Análisis</div>
       <div class="nav-item" onclick="showSection('resumenes',this)" id="nav-resumenes">
@@ -1076,6 +1196,38 @@ tr:hover td{background:var(--surface2)}
                 <tbody id="tb-tr"><tr><td colspan="12" class="empty">Sin transferencias registradas</td></tr></tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <!-- ── CHAT HISTORIAL ── -->
+        <div id="sec-chat-historial" class="section">
+          <div class="table-wrap">
+            <!-- Toolbar con filtros -->
+            <div class="table-toolbar" style="flex-wrap:wrap;gap:8px">
+              <input class="table-search" placeholder="Buscar mensaje..." id="ch-search" oninput="filtrarChatHistorial()">
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <select id="ch-filtro-usuario" onchange="filtrarChatHistorial()" style="font-size:11px;padding:4px 8px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px">
+                  <option value="">Todos los usuarios</option>
+                </select>
+                <select id="ch-filtro-tipo" onchange="filtrarChatHistorial()" style="font-size:11px;padding:4px 8px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px">
+                  <option value="">Todos los mensajes</option>
+                  <option value="user">Solo banqueros</option>
+                  <option value="bot">Solo bot</option>
+                  <option value="con_operacion">Con operación generada</option>
+                </select>
+                <select id="ch-filtro-rango" onchange="filtrarChatHistorial()" style="font-size:11px;padding:4px 8px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px">
+                  <option value="hoy">Hoy</option>
+                  <option value="ayer">Ayer</option>
+                  <option value="semana">Esta semana</option>
+                  <option value="mes">Este mes</option>
+                  <option value="todo">Todo</option>
+                </select>
+              </div>
+              <span style="font-size:10px;color:var(--text2);font-family:var(--mono);margin-left:auto" id="ch-count">0 mensajes</span>
+            </div>
+
+            <!-- Vista conversación agrupada por sesión -->
+            <div id="ch-conversaciones" style="padding:12px 0;display:flex;flex-direction:column;gap:16px"></div>
           </div>
         </div>
 
@@ -3021,7 +3173,209 @@ async function cargarAbonos() {
   renderAbonos(ABONOS_CACHE);
 }
 
-// ── TRANSFERENCIAS ────────────────────────────────────────────────
+// ── CHAT HISTORIAL ────────────────────────────────────────────────
+let CHAT_LOGS_CACHE = [];
+
+async function cargarChatHistorial() {
+  const { data, error } = await SB.from('chat_logs')
+    .select('*')
+    .order('created_at', {ascending: true});
+  if (error) {
+    console.warn('chat_logs error:', error.message);
+    CHAT_LOGS_CACHE = [];
+  } else {
+    CHAT_LOGS_CACHE = data || [];
+  }
+  // Poblar selector de usuarios
+  const usuarios = [...new Set(CHAT_LOGS_CACHE.filter(m => m.tipo === 'user').map(m => m.usuario))];
+  const selU = document.getElementById('ch-filtro-usuario');
+  if (selU) {
+    const current = selU.value;
+    selU.innerHTML = '<option value="">Todos los usuarios</option>'
+      + usuarios.map(u => `<option value="${u}"${u===current?' selected':''}>${u}</option>`).join('');
+  }
+  filtrarChatHistorial();
+}
+
+function filtrarChatHistorial() {
+  const busqueda = (document.getElementById('ch-search')?.value || '').toLowerCase();
+  const filtroU  = document.getElementById('ch-filtro-usuario')?.value || '';
+  const filtroT  = document.getElementById('ch-filtro-tipo')?.value || '';
+  const filtroR  = document.getElementById('ch-filtro-rango')?.value || 'hoy';
+  
+  // Calcular rango de fechas
+  const ahora = new Date();
+  let desde = null;
+  if (filtroR === 'hoy') {
+    desde = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+  } else if (filtroR === 'ayer') {
+    const ayer = new Date(ahora); ayer.setDate(ayer.getDate() - 1);
+    desde = new Date(ayer.getFullYear(), ayer.getMonth(), ayer.getDate());
+    const hasta = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+    renderChatHistorial(CHAT_LOGS_CACHE.filter(m => {
+      const d = new Date(m.created_at);
+      return d >= desde && d < hasta;
+    }), busqueda, filtroU, filtroT);
+    return;
+  } else if (filtroR === 'semana') {
+    desde = new Date(ahora); desde.setDate(desde.getDate() - 7);
+  } else if (filtroR === 'mes') {
+    desde = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+  }
+  
+  const filtrado = CHAT_LOGS_CACHE.filter(m => {
+    if (desde && new Date(m.created_at) < desde) return false;
+    if (filtroU && m.usuario !== filtroU) return false;
+    if (filtroT === 'user' && m.tipo !== 'user') return false;
+    if (filtroT === 'bot' && m.tipo !== 'bot') return false;
+    if (filtroT === 'con_operacion' && !m.operacion_id) return false;
+    if (busqueda && !m.mensaje.toLowerCase().includes(busqueda)) return false;
+    return true;
+  });
+  renderChatHistorial(filtrado, busqueda, filtroU, filtroT);
+}
+
+function renderChatHistorial(mensajes, busqueda='', filtroU='', filtroT='') {
+  const cont = document.getElementById('ch-conversaciones');
+  const countEl = document.getElementById('ch-count');
+  if (!cont) return;
+  
+  if (!mensajes.length) {
+    cont.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text2);font-size:13px">Sin mensajes con este filtro</div>`;
+    if (countEl) countEl.textContent = '0 mensajes';
+    return;
+  }
+  if (countEl) countEl.textContent = `${mensajes.length} mensajes`;
+  
+  // Agrupar por sesión: mismo usuario + mensajes continuos (sin gap > 30min)
+  const sesiones = [];
+  let sesionActual = null;
+  for (const m of mensajes) {
+    const ts = new Date(m.created_at).getTime();
+    const mismoUsuario = sesionActual && (m.tipo === 'bot' || m.usuario === sesionActual.usuario);
+    const cercano = sesionActual && (ts - sesionActual.ultimoTs) < 30 * 60 * 1000;
+    if (!sesionActual || !mismoUsuario || !cercano) {
+      // Nueva sesión cuando hay un mensaje de usuario nuevo o gap grande
+      if (m.tipo === 'user' || !sesionActual) {
+        sesionActual = {
+          usuario: m.usuario,
+          rol: m.rol,
+          inicio: m.created_at,
+          mensajes: [],
+          operaciones: 0,
+          ultimoTs: ts
+        };
+        sesiones.push(sesionActual);
+      }
+    }
+    if (sesionActual) {
+      sesionActual.mensajes.push(m);
+      sesionActual.ultimoTs = ts;
+      if (m.operacion_id) sesionActual.operaciones++;
+    }
+  }
+  
+  // Renderizar sesiones (más recientes primero)
+  cont.innerHTML = [...sesiones].reverse().map((s, si) => {
+    const iniciales = (s.usuario||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+    const fechaTs = new Date(s.inicio);
+    const fechaLabel = fechaTs.toLocaleDateString('es-CL', {day:'numeric',month:'short'})
+      + ' ' + fechaTs.toLocaleTimeString('es-CL', {hour:'2-digit', minute:'2-digit'});
+    const userMsgs = s.mensajes.filter(m => m.tipo === 'user').length;
+    const sesionId = `ch-sesion-${si}`;
+    
+    const mensajesHtml = s.mensajes.map(m => {
+      const hora = new Date(m.created_at).toLocaleTimeString('es-CL', {hour:'2-digit',minute:'2-digit'});
+      const initials = m.tipo === 'user' 
+        ? (m.usuario||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
+        : 'IA';
+      
+      // Texto del mensaje: limpiar HTML para mostrar versión limpia
+      let textoMostrar = m.mensaje;
+      if (m.tipo === 'bot') {
+        // Limpiar HTML del bot para mostrar texto plano
+        textoMostrar = m.mensaje.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        // Limitar longitud
+        if (textoMostrar.length > 200) textoMostrar = textoMostrar.slice(0, 200) + '…';
+      }
+      
+      // Badge de operación si generó una
+      let opBadge = '';
+      if (m.operacion_id && m.operacion_ref) {
+        const tipoIcon = {orden:'📋', aporte:'💼', abono:'💰', transferencia:'🏦'}[m.operacion_tipo] || '📄';
+        opBadge = `<a class="ch-op-tag" onclick="verOperacion('${m.operacion_tipo}',${m.operacion_id})" title="Ver operación">
+          ${tipoIcon} ${m.operacion_ref}
+        </a>`;
+      }
+      
+      return `<div class="ch-msg ${m.tipo}">
+        <div class="ch-msg-avatar">${initials}</div>
+        <div class="ch-msg-body">
+          <div class="ch-msg-bubble">${escHtml(textoMostrar)}</div>
+          ${opBadge}
+          <div class="ch-msg-meta">${hora}${m.tipo==='user'?' · '+m.usuario:''}</div>
+        </div>
+      </div>`;
+    }).join('');
+    
+    return `<div class="ch-sesion">
+      <div class="ch-sesion-header" onclick="toggleSesionChat('${sesionId}')">
+        <div class="ch-sesion-avatar">${iniciales}</div>
+        <div class="ch-sesion-info">
+          <div class="ch-sesion-usuario">${s.usuario}</div>
+          <div class="ch-sesion-meta">${fechaLabel} · ${userMsgs} mensajes</div>
+        </div>
+        <div class="ch-sesion-stats">
+          ${s.operaciones ? `<span class="stat-op">⚡ ${s.operaciones} op${s.operaciones>1?'s':''}</span>` : ''}
+          <span>${s.mensajes.length} msgs</span>
+        </div>
+        <div class="ch-sesion-toggle" id="${sesionId}-toggle">▼</div>
+      </div>
+      <div class="ch-mensajes" id="${sesionId}-mensajes">${mensajesHtml}</div>
+    </div>`;
+  }).join('');
+  
+  // Por defecto colapsar sesiones viejas, abrir solo la más reciente
+  if (sesiones.length > 0) {
+    const primeraSesion = `ch-sesion-0-mensajes`;
+    // La primera (más reciente) queda abierta por defecto
+  }
+}
+
+function toggleSesionChat(sesionId) {
+  const msgs = document.getElementById(`${sesionId}-mensajes`);
+  const toggle = document.getElementById(`${sesionId}-toggle`);
+  if (!msgs) return;
+  msgs.classList.toggle('collapsed');
+  if (toggle) toggle.classList.toggle('open');
+}
+
+function verOperacion(tipo, id) {
+  // Navegar a la sección correcta y abrir el editor
+  const secciones = {orden:'ordenes', aporte:'aportes', abono:'abonos', transferencia:'transferencias'};
+  const seccion = secciones[tipo] || 'ordenes';
+  const nav = document.getElementById(`nav-${seccion}`) || document.querySelector(`[onclick*="${seccion}"]`);
+  showSection(seccion, nav);
+  setTimeout(() => abrirEditorOperacion(tipo === 'orden' ? 'ordenes' : tipo === 'aporte' ? 'aportes' : tipo === 'abono' ? 'abonos' : 'transferencias', id), 500);
+}
+
+// Helper para persistir mensajes en chat_logs
+async function logChatMsg(mensaje, tipo, operacion_tipo=null, operacion_id=null, operacion_ref=null) {
+  if (!CURRENT_USER?.nombre) return;
+  // No logueamos mensajes del bot (muy verbosos) — solo mensajes del usuario y confirmaciones de operación
+  if (tipo === 'bot' && !operacion_id) return;
+  try {
+    await SB.from('chat_logs').insert({
+      usuario: CURRENT_USER.nombre,
+      rol: CURRENT_USER.rol || '',
+      mensaje: mensaje,
+      tipo: tipo,
+      operacion_tipo: operacion_tipo,
+      operacion_id: operacion_id,
+      operacion_ref: operacion_ref
+    });
+  } catch(e) { /* silent fail */ }
+}
 let TRANSFERENCIAS_CACHE = [];
 let FILTRO_EMAIL_TR = 'todos';
 
@@ -3153,6 +3507,7 @@ async function showSection(name, el) {
   else if(name==='saldos') await cargarSaldos();
   else if(name==='abonos') await cargarAbonos();
   else if(name==='transferencias') await cargarTransferencias();
+  else if(name==='chat-historial') await cargarChatHistorial();
   else if(name==='clientes') renderClientes();
   else if(name==='banqueros') {
     await loadBanqueros();
@@ -7165,20 +7520,21 @@ async function guardarAbono(p) {
   
   // Aprender relación cliente ↔ banquero (silent fail)
   aprenderClienteBanquero(p.rut, executor).catch(()=>{});
-  
+  // Loguear en historial de chat
+  const opRefAbono = `Abono ${data.fecha?.slice(5).replace('-','/')} ${p.cliente}`;
+  logChatMsg(`Abono $${Number(p.monto||0).toLocaleString('es-CL')} ${p.cliente} cta ${p.cta} ${p.corredora||''}`, 'user', 'abono', data.id, opRefAbono).catch(()=>{});
+
   // Decidir si enviar email automáticamente
   const enviaAuto = debeEnviarEmailAuto(p);
   const corrKey = (p.corredora||'').toUpperCase().trim();
   const tieneCorrConfig = !!corredorasConfig[corrKey];
   const outlookConectado = !!outlookAccount;
-  
+
   if (enviaAuto && tieneCorrConfig && outlookConectado) {
-    // Intentar enviar email
     const r = await enviarEmailAbono(data).catch(e => ({ok:false, msg:e.message}));
     if (r.ok) {
       await SB.from('abonos').update({email_enviado:true, email_estado:'enviado'}).eq('id', data.id);
       botMsg(`✅ Abono guardado y email enviado a ${p.corredora}`);
-    } else {
       await SB.from('abonos').update({email_estado:'fallo'}).eq('id', data.id);
       botMsg(`⚠ Abono guardado pero falló el email: ${r.msg||'?'}. Lo podés reintentar desde la tabla.`);
     }
@@ -8637,6 +8993,9 @@ async function _confirmarPendingOrderInner(p) {
       trackUso(p.nemo, p.cliente);
       // Aprender relación cliente ↔ banquero (silent fail)
       aprenderClienteBanquero(p.rut, executor).catch(()=>{});
+      // Loguear en historial de chat
+      const opRef = `Orden ${data.fecha?.slice(5).replace('-','/')}-${data.letra_op||'?'}`;
+      logChatMsg(`${p.op} ${p.nemo} ${p.cliente}${p.cantidad?' '+p.cantidad+' cuotas':''}${p.monto?' $'+Number(p.monto).toLocaleString('es-CL'):''}`, 'user', 'orden', data.id, opRef).catch(()=>{});
       
       if (!irAlCorredor) {
         // Sin destino email (corredora sin config o Outlook desconectado) → marcar email_estado apropiado
@@ -8915,6 +9274,8 @@ function userMsg(text) {
   div.innerHTML = `<div class="cm-bubble">${escHtml(text)}</div><div class="cm-meta">${now}</div>`;
   msgs.appendChild(div);
   scrollChat();
+  // Loguear en Supabase (silent fail)
+  logChatMsg(text, 'user').catch(()=>{});
 }
 function showTyping() {
   const msgs = document.getElementById('chat-messages');
