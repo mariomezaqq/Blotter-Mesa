@@ -530,6 +530,36 @@ tr:hover td{background:var(--surface2)}
 .ch-sesion-toggle.open { transform: rotate(180deg); }
 .ch-mensajes { display: flex; flex-direction: column; gap: 6px; padding: 12px; }
 .ch-mensajes.collapsed { display: none; }
+.ch-ops-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+.cc-chip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent2);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--text);
+}
+.cc-opt {
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.cc-opt:hover { border-color: var(--accent); background: var(--accent-dim); }
 .ch-msg {
   display: flex;
   gap: 8px;
@@ -3178,6 +3208,38 @@ async function cargarSaldos() {
   const { data } = await SB.from('saldos').select('*').eq('fecha',todayStr()).order('id',{ascending:false});
   renderSaldos(data||[]);
 }
+
+// Actualiza (o crea) el saldo de una cuenta. modo: 'suma' (abono) o 'resta' (transferencia/venta egreso)
+async function actualizarSaldoCuenta(rut, cliente, cta, monto, modo='suma') {
+  if (!rut || !monto) return;
+  const ctaStr = (cta || '0').toString();
+  const delta = modo === 'resta' ? -Number(monto) : Number(monto);
+  try {
+    // Buscar saldo existente de hoy para esta cuenta
+    const { data: existentes } = await SB.from('saldos')
+      .select('*')
+      .eq('rut', rut)
+      .eq('cta', ctaStr)
+      .eq('fecha', todayStr());
+    if (existentes && existentes.length) {
+      const s = existentes[0];
+      const nuevoSaldo = (Number(s.saldo_disponible) || 0) + delta;
+      await SB.from('saldos').update({saldo_disponible: nuevoSaldo}).eq('id', s.id);
+    } else {
+      // Crear nuevo registro de saldo
+      await SB.from('saldos').insert({
+        fecha: todayStr(),
+        rut: rut,
+        razon_social: cliente || '',
+        cta: ctaStr,
+        saldo_disponible: delta > 0 ? delta : 0,
+        instruccion: modo === 'suma' ? 'Abono' : 'Egreso'
+      });
+    }
+    if (isActive('saldos')) await cargarSaldos();
+  } catch(e) { console.warn('actualizarSaldoCuenta:', e); }
+}
+
 async function cargarAbonos() {
   const { data } = await SB.from('abonos').select('*').order('id',{ascending:false});
   ABONOS_CACHE = data || [];
@@ -3329,12 +3391,19 @@ function renderChatHistorial(mensajes, busqueda='', filtroU='', filtroT='') {
       </div>`;
     }).join('');
     
+    // Operaciones de la sesión (para preview visible aunque esté colapsada)
+    const opsEnSesion = s.mensajes.filter(m => m.operacion_id && m.operacion_ref);
+    const opsPreview = opsEnSesion.map(m => {
+      const tipoIcon = {orden:'📋', aporte:'💼', abono:'💰', transferencia:'🏦'}[m.operacion_tipo] || '📄';
+      return `<a class="ch-op-tag" onclick="event.stopPropagation();verOperacion('${m.operacion_tipo}',${m.operacion_id})" title="Ver operación">${tipoIcon} ${m.operacion_ref}</a>`;
+    }).join('');
+    
     return `<div class="ch-sesion">
       <div class="ch-sesion-header" onclick="toggleSesionChat('${sesionId}')">
         <div class="ch-sesion-avatar">${iniciales}</div>
         <div class="ch-sesion-info">
           <div class="ch-sesion-usuario">${s.usuario}</div>
-          <div class="ch-sesion-meta">${fechaLabel} · ${userMsgs} mensajes</div>
+          <div class="ch-sesion-meta">${fechaLabel} · ${userMsgs} mensaje${userMsgs!==1?'s':''}</div>
         </div>
         <div class="ch-sesion-stats">
           ${s.operaciones ? `<span class="stat-op">⚡ ${s.operaciones} op${s.operaciones>1?'s':''}</span>` : ''}
@@ -3342,15 +3411,10 @@ function renderChatHistorial(mensajes, busqueda='', filtroU='', filtroT='') {
         </div>
         <div class="ch-sesion-toggle" id="${sesionId}-toggle">▼</div>
       </div>
-      <div class="ch-mensajes" id="${sesionId}-mensajes">${mensajesHtml}</div>
+      ${opsPreview ? `<div class="ch-ops-preview">${opsPreview}</div>` : ''}
+      <div class="ch-mensajes collapsed" id="${sesionId}-mensajes">${mensajesHtml}</div>
     </div>`;
   }).join('');
-  
-  // Por defecto colapsar sesiones viejas, abrir solo la más reciente
-  if (sesiones.length > 0) {
-    const primeraSesion = `ch-sesion-0-mensajes`;
-    // La primera (más reciente) queda abierta por defecto
-  }
 }
 
 function toggleSesionChat(sesionId) {
@@ -5694,7 +5758,11 @@ function resolveCliente(text) {
     // Otros
     'FONDO','FM','FDO','FFMM','FONDOS','MUTUO','MUTUOS','INVERSION','INVERSIÓN','SOCIEDAD','LTDA','SPA','SA',
     // NAV / valor cuota — palabras reservadas para precio
-    'NAV','VC','VALOR','CUOTA','TOAL'
+    'NAV','VC','VALOR','CUOTA','TOAL',
+    // Verbos/palabras de transferencia (no son parte del nombre del cliente)
+    'TRANSFIERE','TRANSFIERELOS','TRANSFIERELAS','TRANSFIERELO','TRANSFIERELA',
+    'TRANSFERIR','TRANSFER','CORRIENTE','CTE','LUEGO','DESPUES','DESPUÉS',
+    'ENTONCES','TAMBIEN','TAMBIÉN','ABONA','ABONO','DEPOSITA','DEPOSITO'
   ]);
 
   // Use continuous-block matching: find longest run of name-like words
@@ -5703,7 +5771,7 @@ function resolveCliente(text) {
     && !nemoWords.has(w) && !FUND_WORDS.has(w) && !/^\d/.test(w);
 
   // First try "a [Nombre]" pattern (típico en aportes: "aporta X a MARIO MEZA")
-  const aNombreM = text.match(/(?:^|\s)a\s+([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+){0,3})(?=\s+(?:por|via|cuenta|cta|rut|precio|\d)|\s*$)/i);
+  const aNombreM = text.match(/(?:^|\s)a\s+([A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúA-ZÁÉÍÓÚ]+){0,3})(?=\s+(?:por|via|cuenta|cta|rut|precio|y\s|e\s|transf|abona|abono|luego|despu[eé]s|\d)|\s*$)/i);
   let words = [];
   if (aNombreM) {
     const candidate = aNombreM[1].toUpperCase().split(/\s+/).filter(isNW);
@@ -5712,7 +5780,7 @@ function resolveCliente(text) {
 
   // Then try "para [BLOCK]" pattern
   if (!words.length) {
-    const paraM = text.match(/\bpara\s+([A-ZÁÉÍÓÚA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|\d)|$)/i);
+    const paraM = text.match(/\bpara\s+([A-ZÁÉÍÓÚA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|y\s|e\s|transf|abona|abono|luego|despu[eé]s|\d)|$)/i);
     if (paraM) {
       words = paraM[1].toUpperCase().split(/\s+/).filter(isNW);
     }
@@ -5789,7 +5857,12 @@ function extractNameCandidate(text) {
     'PALOS','MILLONES','LUCAS','FONDO','SERIE','RESCATE','APORTE','SALDO','HACER',
     'HACEME','HAZ','HAGA','QUIERO','TOTAL','DEUDA','ALTERNATIVA','LIQUIDEZ','ENFOQUE',
     'RENTA','FIJA','VARIABLE','PLAZO','NP','LTM','LATAM','CUENTA','CTA',
-    'NAV','VC','VALOR','CUOTA','TOAL']);  // TOAL = misspelling de TOTAL común
+    'NAV','VC','VALOR','CUOTA','TOAL',
+    // Palabras de transferencia/instrucción que NO son parte del nombre
+    'TRANSFIERE','TRANSFIERELOS','TRANSFIERELAS','TRANSFIERELO','TRANSFIERELA',
+    'TRANSFERIR','TRANSFIÉRELOS','TRANSFIÉRELO','TRANSFER','TRANSFERENCIA',
+    'CORRIENTE','CTE','CteCte','ABONA','ABONO','DEPOSITA','DEPOSITO',
+    'LUEGO','DESPUES','DESPUÉS','ENTONCES','TAMBIEN','TAMBIÉN']);  // TOAL = misspelling de TOTAL común
 
   const nemoWords = new Set();
   for (const [nemo, aliases] of Object.entries(NEMO_ALIASES)) {
@@ -5807,14 +5880,14 @@ function extractNameCandidate(text) {
   }
 
   // 1. Look for block after "para [NAME]" — most explicit pattern
-  const paraM = text.match(/\bpara\s+([A-ZÁÉÍÓÚÜÑA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|\d)|$)/i);
+  const paraM = text.match(/\bpara\s+([A-ZÁÉÍÓÚÜÑA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|y\s|e\s|transf|abona|abono|luego|despu[eé]s|\d)|$)/i);
   if (paraM) {
     const candidate = paraM[1].trim().split(/\s+/).filter(isNameWord).slice(0,4).join(' ');
     if (candidate.length > 1) return candidate.toUpperCase();
   }
 
   // 2. Look for block after "a [NAME]" (e.g. "compra X a Juan Pérez")
-  const aM = text.match(/\ba\s+([A-ZÁÉÍÓÚÜÑA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|\d)|$)/i);
+  const aM = text.match(/\ba\s+([A-ZÁÉÍÓÚÜÑA-Za-z][^\d,]+?)(?=\s+(?:cuenta|cta|rut|precio|por|via|y\s|e\s|transf|abona|abono|luego|despu[eé]s|\d)|$)/i);
   if (aM) {
     const candidate = aM[1].trim().split(/\s+/).filter(isNameWord).slice(0,4).join(' ');
     if (candidate.length > 1) return candidate.toUpperCase();
@@ -5955,10 +6028,25 @@ function processCommand(text) {
   if (/\b(ABONO|ABONA|ABONÉ|ABONAR|DEPOSITO|DEPÓSITO|DEPOSITA|DEPOSITÉ|DEPOSITAR)\b/i.test(text)) { parseAbono(text); return; }
   if (/\b(APORTE|APORTA[RS]?|APORTO|APORTÓ|SUSCRIPCI[OÓ]N)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
   if (/\b(RESCATE|RESCATAR)\b/i.test(text)) { parseAporte(text,'Rescate'); return; }
-  // Transferencia a cta cte = instrucción bancaria a corredora
-  // Diferencia de "transferencia" como forma de pago de un aporte
-  if (/\b(TRANSFERENCIA|TRANSFER)\b/i.test(text) && /\b(CTA|CUENTA|CTE|CORRIENTE)\b/i.test(text)) { parseTransferencia(text); return; }
+
+  // ── VENTA/COMPRA + transferencia ligada en un mismo mensaje ──
+  // Ej: "vende 20 palos de deuda total a mario meza y transfiere a su cuenta corriente"
+  const tieneOrden = /\b(COMPRA|COMPRAR|COMPRO|COMPRÉ|COMPRÁ|VENTA|VENDER|VENDO|VENDE|VENDÉ|VENDED)\b/i.test(text);
+  const tieneTransferencia = /\b(TRANSFER|TRANSFIER[EA]|TRANSFERIR|TRANSFI[EÉ]RE)\b/i.test(text)
+    && /\b(CTA|CUENTA|CTE|CORRIENTE)\b/i.test(text);
+
+  if (tieneOrden && tieneTransferencia) {
+    // Orden con transferencia ligada: parsear la orden, marcar flag
+    const op = /\b(VENTA|VENDER|VENDO|VENDE|VENDÉ|VENDED)\b/i.test(text) ? 'VENTA' : 'COMPRA';
+    parseOrden(text, op, {conTransferencia: true});
+    return;
+  }
+
+  // Transferencia sola (sin orden)
+  if (tieneTransferencia) { parseTransferencia(text); return; }
+  // "transferencia" como forma de pago de un aporte (sin "cta cte")
   if (/\b(TRANSFERENCIA)\b/i.test(text)) { parseAporte(text,'Transferencia'); return; }
+
   if (/\b(COMPRA|COMPRAR|COMPRO|COMPRÉ|COMPRÁ)\b/i.test(text)) { parseOrden(text,'COMPRA'); return; }
   if (/\b(VENTA|VENDER|VENDO|VENDE|VENDÉ|VENDED)\b/i.test(text)) { parseOrden(text,'VENTA'); return; }
   if (/\b(FONDO)\b/i.test(text)) { parseAporte(text,'Aporte'); return; }
@@ -6016,7 +6104,7 @@ function detectarCCBanquero(text) {
 // ═══════════════════════════════════════════════════════════
 // PARSE ORDEN
 // ═══════════════════════════════════════════════════════════
-function parseOrden(text, forceOp) {
+function parseOrden(text, forceOp, opts={}) {
   // Detectar y eliminar "a NAV" / "a valor cuota" / "a VC" del texto global
   // antes de cualquier parsing, para que no interfiera con cliente/nemo
   let navFlagGlobal = false;
@@ -6103,6 +6191,7 @@ function parseOrden(text, forceOp) {
     clienteResult: clientResult,
     navFlag: navFinalFlag,
     navDelta: navFinalDelta,
+    conTransferencia: opts.conTransferencia || false,
     ccBanqueros: window._pendingCCBanqueros || null
   };
   window._pendingCCBanqueros = null;
@@ -7115,6 +7204,43 @@ function showTransferenciaConfirm(p) {
     </div>`);
 }
 
+// Tras confirmar una venta con instrucción de transferir el producido,
+// se ofrece crear la transferencia ligada a cta cte del cliente.
+function dispararTransferenciaLigada(datos) {
+  const montoFmt = datos.monto ? '$' + Number(datos.monto).toLocaleString('es-CL') : 'el producido';
+  botMsg(`💸 Esta venta pedía transferir a la cuenta corriente del cliente.
+    <div class="card-box" style="margin-top:8px">
+      <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Transferencia a CTA CTE</div>
+      <div style="font-size:12px;margin-bottom:8px">
+        <strong>${datos.cliente}</strong> · cta ${datos.cta||'?'} · ${datos.corredora||'?'} · ${montoFmt}
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn sm ok" onclick='crearTransferenciaLigada(${JSON.stringify(datos).replace(/'/g,"&#39;")})'>Sí, crear transferencia</button>
+        <button class="btn sm danger" onclick="botMsg('OK, solo la venta. ¿Qué más?');chatContext={}">No, solo la venta</button>
+      </div>
+    </div>`);
+}
+
+function crearTransferenciaLigada(datos) {
+  const p = {
+    type: 'transferencia',
+    rut: datos.rut,
+    cliente: datos.cliente,
+    cta: datos.cta || '0',
+    corredora: datos.corredora || '',
+    monto: datos.monto || null,
+    moneda: 'CLP',
+    forma_pago: 'TRANSFERENCIA A CTA CTE',
+    observaciones: 'Transferencia del producido de venta'
+  };
+  if (!p.monto) {
+    botMsg('⚠ No tengo el monto de la transferencia. ¿Cuánto transferimos? (ej: 20 palos)');
+    chatContext = {state:'await_missing_transf', field:'monto', parsed: p};
+    return;
+  }
+  showTransferenciaConfirm(p);
+}
+
 async function guardarTransferencia(p) {
   const executor = CURRENT_USER?.nombre || 'Sistema';
   const letraTransf = await siguienteLetraDelDia(todayStr(), 'transferencias').catch(() => 'A');
@@ -7143,9 +7269,13 @@ async function guardarTransferencia(p) {
 
   // Aprender relación cliente ↔ banquero
   aprenderClienteBanquero(p.rut, executor).catch(()=>{});
-
-  // Email automático
-  const enviaAuto = debeEnviarEmailAuto(p);
+  // Loguear en historial
+  const opRefTr = `Transferencia ${data.fecha?.slice(5).replace('-','/')}-${data.letra_op||'?'}`;
+  const msgOrigTr = window._mensajeOriginalOp || `Transferencia $${Number(p.monto||0).toLocaleString('es-CL')} ${p.cliente}`;
+  logChatMsg(msgOrigTr, 'user', 'transferencia', data.id, opRefTr).catch(()=>{});
+  window._mensajeOriginalOp = null;
+  // Restar la transferencia del saldo de la cuenta de origen
+  await actualizarSaldoCuenta(p.rut, p.cliente, p.cta, p.monto, 'resta').catch(e => console.warn('saldo:', e));
   const corrKey = (p.corredora||'').toUpperCase().trim();
   const tieneCorrConfig = !!corredorasConfig[corrKey];
   const outlookConectado = !!outlookAccount;
@@ -7533,7 +7663,12 @@ async function guardarAbono(p) {
   aprenderClienteBanquero(p.rut, executor).catch(()=>{});
   // Loguear en historial de chat
   const opRefAbono = `Abono ${data.fecha?.slice(5).replace('-','/')} ${p.cliente}`;
-  logChatMsg(`Abono $${Number(p.monto||0).toLocaleString('es-CL')} ${p.cliente} cta ${p.cta} ${p.corredora||''}`, 'user', 'abono', data.id, opRefAbono).catch(()=>{});
+  const msgOrigAbono = window._mensajeOriginalOp || `Abono $${Number(p.monto||0).toLocaleString('es-CL')} ${p.cliente}`;
+  logChatMsg(msgOrigAbono, 'user', 'abono', data.id, opRefAbono).catch(()=>{});
+  window._mensajeOriginalOp = null;
+
+  // Sumar el abono al saldo de la cuenta de destino (crear o actualizar)
+  await actualizarSaldoCuenta(p.rut, p.cliente, p.cta, p.monto, 'suma').catch(e => console.warn('saldo:', e));
 
   // Decidir si enviar email automáticamente
   const enviaAuto = debeEnviarEmailAuto(p);
@@ -8736,6 +8871,23 @@ function showParsedConfirm(p) {
       </div>`;
   }
   
+  // Selector de CC: copiar a banqueros o emails libres
+  let ccHtml = '';
+  if (p.type === 'orden' || p.type === 'aporte' || p.type === 'cruce' || p.type === 'transferencia' || p.type === 'abono') {
+    const ccActuales = window._pendingCCList || [];
+    const chipsActuales = ccActuales.map((email, i) =>
+      `<span class="cc-chip">${email}<button onclick="quitarCC(${i})" style="margin-left:4px;color:var(--venta);background:none;border:none;cursor:pointer">×</button></span>`
+    ).join('');
+    ccHtml = `
+      <div class="chat-confirm-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:6px;background:var(--surface2);padding:8px 10px;border-radius:6px;border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text2)">
+          <span>📧 CC (copiar a):</span>
+          <button onclick="abrirSelectorCC()" style="margin-left:auto;background:var(--accent);color:#0d1a0f;border:none;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:600;cursor:pointer">+ Agregar</button>
+        </div>
+        <div id="cc-chips" style="display:flex;flex-wrap:wrap;gap:4px">${chipsActuales || '<span style="font-size:10px;color:var(--text3)">Nadie en copia</span>'}</div>
+      </div>`;
+  }
+
   const html = `<div class="chat-confirm">
     <div class="chat-confirm-title" style="${colorStyle}">${titleLabel}</div>
     ${rows.map(([k,v])=>`
@@ -8743,6 +8895,7 @@ function showParsedConfirm(p) {
         <span class="chat-confirm-key">${k}</span>
         <span class="chat-confirm-val mono">${v}</span>
       </div>`).join('')}
+    ${ccHtml}
     ${overrideHtml}
     <div class="chat-confirm-actions">
       <button class="chat-confirm-btn confirm" onclick="confirmarConOverride()">✓ Confirmar</button>
@@ -8753,12 +8906,66 @@ function showParsedConfirm(p) {
   botMsg('¿Confirmar esta instrucción?', html);
 }
 
+// ── Selector de CC banqueros ──────────────────────────────────────
+window._pendingCCList = window._pendingCCList || [];
+
+function abrirSelectorCC() {
+  const banqueros = (BANKERS_DB || []).filter(b => b.email && b.estado === 'activo');
+  const opcionesBanqueros = banqueros.map(b =>
+    `<button class="cc-opt" onclick="agregarCC('${b.email}')">${b.nombre} <span style="color:var(--text3);font-size:10px">${b.email}</span></button>`
+  ).join('');
+  
+  const html = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:6px">
+    <div style="font-size:11px;color:var(--text2);margin-bottom:8px">Elegí un banquero o escribí un email:</div>
+    <div style="display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;margin-bottom:8px">
+      ${opcionesBanqueros || '<span style="font-size:10px;color:var(--text3)">No hay banqueros con email</span>'}
+    </div>
+    <div style="display:flex;gap:6px">
+      <input id="cc-email-libre" type="email" placeholder="email@ejemplo.cl" style="flex:1;padding:6px 8px;font-size:11px;border:1px solid var(--border2);border-radius:4px;background:var(--surface);color:var(--text);outline:none">
+      <button onclick="agregarCCLibre()" style="background:var(--accent);color:#0d1a0f;border:none;border-radius:4px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">Agregar</button>
+    </div>
+  </div>`;
+  botMsg('', html);
+}
+
+function agregarCC(email) {
+  if (!window._pendingCCList) window._pendingCCList = [];
+  if (!window._pendingCCList.includes(email)) {
+    window._pendingCCList.push(email);
+  }
+  // Re-render la confirmación
+  if (pendingOrder) showParsedConfirm(pendingOrder);
+}
+
+function agregarCCLibre() {
+  const input = document.getElementById('cc-email-libre');
+  if (!input) return;
+  const email = input.value.trim();
+  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
+    botMsg('⚠ Email inválido. Escribí un email válido (ej: nombre@empresa.cl)');
+    return;
+  }
+  agregarCC(email);
+}
+
+function quitarCC(idx) {
+  if (window._pendingCCList) {
+    window._pendingCCList.splice(idx, 1);
+    if (pendingOrder) showParsedConfirm(pendingOrder);
+  }
+}
+
 // Captura el override del checkbox y dispara la confirmación
 function confirmarConOverride() {
   const chk = document.getElementById('chk-send-email-now');
   if (chk && pendingOrder) {
     pendingOrder.enviarEmailOverride = chk.checked ? true : false;
   }
+  // Pasar la lista de CC seleccionada
+  if (pendingOrder && window._pendingCCList?.length) {
+    pendingOrder.ccExtra = [...window._pendingCCList];
+  }
+  window._pendingCCList = []; // resetear para la próxima
   handleChatInput('si');
 }
 
@@ -9004,9 +9211,18 @@ async function _confirmarPendingOrderInner(p) {
       trackUso(p.nemo, p.cliente);
       // Aprender relación cliente ↔ banquero (silent fail)
       aprenderClienteBanquero(p.rut, executor).catch(()=>{});
-      // Loguear en historial de chat
+      // Loguear en historial: UN registro con el mensaje original del banquero + link a la orden
       const opRef = `Orden ${data.fecha?.slice(5).replace('-','/')}-${data.letra_op||'?'}`;
-      logChatMsg(`${p.op} ${p.nemo} ${p.cliente}${p.cantidad?' '+p.cantidad+' cuotas':''}${p.monto?' $'+Number(p.monto).toLocaleString('es-CL'):''}`, 'user', 'orden', data.id, opRef).catch(()=>{});
+      const msgOriginal = window._mensajeOriginalOp || `${p.op} ${p.nemo} ${p.cliente}`;
+      logChatMsg(msgOriginal, 'user', 'orden', data.id, opRef).catch(()=>{});
+      window._mensajeOriginalOp = null; // resetear para la próxima operación
+      
+      // Si la venta venía con instrucción de transferir el producido a cta cte,
+      // preparar la transferencia ligada (se ofrece tras confirmar la venta)
+      const ofrecerTransf = p.conTransferencia ? {
+        rut: p.rut, cliente: p.cliente, cta: p.cta, corredora: p.corredora,
+        monto: p.monto || (p.cantidad && p.precio ? p.cantidad * p.precio : null)
+      } : null;
       
       if (!irAlCorredor) {
         // Sin destino email (corredora sin config o Outlook desconectado) → marcar email_estado apropiado
@@ -9016,11 +9232,14 @@ async function _confirmarPendingOrderInner(p) {
         botMsg(`✅ Orden guardada${aviso}`);
         if (isActive('ordenes')) await cargarOrdenes();
         else showSection('ordenes', document.querySelector('.nav-item'));
+        if (ofrecerTransf) dispararTransferenciaLigada(ofrecerTransf);
         return;
       }
       
       data.necesita_ok = !!necesitaOk;
-      data.cc_banqueros = p.ccBanqueros?.emails || [];
+      // CC: combinar los detectados por texto + los agregados manualmente con el selector "+"
+      const ccCombinado = [...(p.ccBanqueros?.emails || []), ...(p.ccExtra || [])];
+      data.cc_banqueros = [...new Set(ccCombinado)]; // sin duplicados
       
       // Decidir si enviar email automáticamente
       if (!debeEnviarEmailAuto(p)) {
@@ -9034,6 +9253,7 @@ async function _confirmarPendingOrderInner(p) {
         botMsg(`✅ Orden guardada${comisionMsg} · 🕓 <strong>email pendiente</strong> (revisar antes de enviar)${warnNoEnc}`);
         if (isActive('ordenes')) await cargarOrdenes();
         else showSection('ordenes', document.querySelector('.nav-item'));
+        if (ofrecerTransf) dispararTransferenciaLigada(ofrecerTransf);
         return;
       }
       
@@ -9060,6 +9280,7 @@ async function _confirmarPendingOrderInner(p) {
       botMsg(`✅ Orden guardada${comisionMsg}${emailMsg}${warnNoEnc}`);
       if (isActive('ordenes')) await cargarOrdenes();
       else showSection('ordenes', document.querySelector('.nav-item'));
+      if (ofrecerTransf) dispararTransferenciaLigada(ofrecerTransf);
     };
     
     // Flujo: COMISIÓN → OK → INSERT
@@ -9285,8 +9506,12 @@ function userMsg(text) {
   div.innerHTML = `<div class="cm-bubble">${escHtml(text)}</div><div class="cm-meta">${now}</div>`;
   msgs.appendChild(div);
   scrollChat();
-  // Loguear en Supabase (silent fail)
-  logChatMsg(text, 'user').catch(()=>{});
+  // Recordar el mensaje original de la operación en curso (el primero del flujo).
+  // No lo logueamos todavía: se loguea junto con la operación al confirmar.
+  // Si no hay operación en curso, este es el primer mensaje → guardarlo.
+  if (!window._mensajeOriginalOp) {
+    window._mensajeOriginalOp = text;
+  }
 }
 function showTyping() {
   const msgs = document.getElementById('chat-messages');
