@@ -5576,6 +5576,7 @@ function parseMontoNatural(text) {
 // Strategy: strip noise first, then identify each number's role by context
 function extractCantidadYPrecio(text) {
   let cantidad = null, precio = null, monto = null, navFlag = false, navDelta = 0;
+  let cantidadExplicita = false; // true si la cantidad vino de "cuotas/acciones/títulos/unidades"
 
   // Step 0: detectar "a NAV", "a valor cuota", "a vc", "al valor cuota" → flag para resolver después
   // También capturar descuento/premium: "a NAV con 0,1 descuento" / "a NAV -0,1" / "a NAV +0,2"
@@ -5622,6 +5623,7 @@ function extractCantidadYPrecio(text) {
   const cantKwM = t.match(/(\d[\d.,]*)\s*(cuotas?|acciones?|t[íi]tulos?|unidades?)/i);
   if (cantKwM) {
     cantidad = Math.round(parseFloat(cantKwM[1].replace(/\./g,'').replace(',','.')));
+    cantidadExplicita = true;
     t = t.replace(cantKwM[0], 'CANTNUM');
   }
 
@@ -5661,7 +5663,7 @@ function extractCantidadYPrecio(text) {
     precio = nums[0];
   }
 
-  return {cantidad, precio, monto, navFlag, navDelta};
+  return {cantidad, precio, monto, navFlag, navDelta, cantidadExplicita};
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -6152,7 +6154,7 @@ function parseOrden(text, forceOp, opts={}) {
   
   const op = forceOp || (/\b(VENTA|VENDER|VENDO)\b/i.test(text) ? 'VENTA' : 'COMPRA');
 
-  const {cantidad, precio, monto, navFlag, navDelta} = extractCantidadYPrecio(text);
+  const {cantidad, precio, monto, navFlag, navDelta, cantidadExplicita} = extractCantidadYPrecio(text);
   // Si lo detectamos arriba, propagamos
   const navFinalFlag = navFlag || navFlagGlobal;
   const navFinalDelta = navDelta || navDeltaGlobal;
@@ -6198,11 +6200,24 @@ function parseOrden(text, forceOp, opts={}) {
   if (corredora)            textForClient = textForClient.replace(new RegExp('\\b'+corredora+'\\b','gi'), '');
   const clientResult = resolveCliente(textForClient);
 
+  // ── Reinterpretar número como MONTO en pesos (no acciones) ──
+  // Regla "las dos primeras juntas": si el nemo es un fondo (CFI/CFM) Y el número
+  // vino suelto (sin decir "cuotas/acciones") Y es grande (> 1 millón), entonces
+  // ese número es un MONTO en pesos, no una cantidad de cuotas.
+  // Ej: "compra 15.500.600 de deuda total" → monto $15.500.600, no 15.500.600 cuotas.
+  let cantidadFinal = cantidad, montoFinal = monto;
+  const nemoEsFondo = /^CF[IM]/i.test(nemoResult?.resolved || nemoRaw || '');
+  if (nemoEsFondo && !cantidadExplicita && precio == null && montoFinal == null
+      && cantidadFinal != null && cantidadFinal > 1_000_000) {
+    montoFinal    = cantidadFinal;
+    cantidadFinal = null;
+  }
+
   const parsed = {
     type:'orden', op,
     nemo: nemoResult.resolved || nemoRaw,
     nemoResult, nemoRaw,
-    cantidad, precio, monto, condicion, moneda, corredora, cta,
+    cantidad: cantidadFinal, precio, monto: montoFinal, condicion, moneda, corredora, cta,
     cliente: clientResult?.nombre || '',
     rut:     clientResult?.rut    || '',
     clienteResult: clientResult,
