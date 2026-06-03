@@ -7655,6 +7655,35 @@ async function guardarAbono(p) {
   
   const {data, error} = await SB.from('abonos').insert(row).select().single();
   if (error) {
+    // Si falla por una columna que no existe, reintentar solo con las columnas básicas
+    if (error.message && /column|schema cache|could not find/i.test(error.message)) {
+      const rowBasico = {
+        fecha: todayStr(),
+        rut: p.rut,
+        cliente: p.cliente,
+        cta: p.cta || '',
+        monto: p.monto || null,
+        medio: p.medio || '',
+        banco_origen: p.banco_origen || '',
+        observaciones: p.observaciones || ''
+      };
+      const retry = await SB.from('abonos').insert(rowBasico).select().single();
+      if (retry.error) {
+        botMsg('❌ Error guardando abono: ' + retry.error.message);
+        return;
+      }
+      // Continuar con el data del retry
+      var data2 = retry.data;
+      botMsg(`✅ Abono guardado · (sin tracking de email — faltan columnas en la tabla)`);
+      aprenderClienteBanquero(p.rut, executor).catch(()=>{});
+      await actualizarSaldoCuenta(p.rut, p.cliente, p.cta, p.monto, 'suma').catch(e => console.warn('saldo:', e));
+      const opRef2 = `Abono ${rowBasico.fecha?.slice(5).replace('-','/')} ${p.cliente}`;
+      logChatMsg(window._mensajeOriginalOp || `Abono $${Number(p.monto||0).toLocaleString('es-CL')} ${p.cliente}`, 'user', 'abono', data2.id, opRef2).catch(()=>{});
+      window._mensajeOriginalOp = null;
+      if (isActive('abonos')) await cargarAbonos();
+      else showSection('abonos', document.getElementById('nav-abonos'));
+      return;
+    }
     botMsg('❌ Error guardando abono: ' + error.message);
     return;
   }
@@ -8928,13 +8957,23 @@ function abrirSelectorCC() {
   botMsg('', html);
 }
 
+// Re-pinta los chips de CC en el último bloque #cc-chips visible (sin re-renderizar todo el modal)
+function repintarChipsCC() {
+  const chipsHost = [...document.querySelectorAll('#cc-chips')].pop();
+  if (!chipsHost) return;
+  const lista = window._pendingCCList || [];
+  chipsHost.innerHTML = lista.length
+    ? lista.map((email, i) => `<span class="cc-chip">${email}<button onclick="quitarCC(${i})" style="margin-left:4px;color:var(--venta);background:none;border:none;cursor:pointer">×</button></span>`).join('')
+    : '<span style="font-size:10px;color:var(--text3)">Nadie en copia</span>';
+}
+
 function agregarCC(email) {
   if (!window._pendingCCList) window._pendingCCList = [];
   if (!window._pendingCCList.includes(email)) {
     window._pendingCCList.push(email);
   }
-  // Re-render la confirmación
-  if (pendingOrder) showParsedConfirm(pendingOrder);
+  repintarChipsCC();
+  botMsg(`✓ Agregado a CC: <strong>${email}</strong>`);
 }
 
 function agregarCCLibre() {
@@ -8951,7 +8990,7 @@ function agregarCCLibre() {
 function quitarCC(idx) {
   if (window._pendingCCList) {
     window._pendingCCList.splice(idx, 1);
-    if (pendingOrder) showParsedConfirm(pendingOrder);
+    repintarChipsCC();
   }
 }
 
