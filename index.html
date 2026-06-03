@@ -3776,11 +3776,14 @@ async function abrirEditorOperacion(tabla, id) {
   }
   
   EDITOR_CTX = {tabla, id, row, grupo, original: JSON.parse(JSON.stringify(grupo))};
+  // Inicializar lista de CC del editor con los que ya tenga la orden
+  window._editorCCList = Array.isArray(row.cc_banqueros) ? [...row.cc_banqueros] : [];
   renderEditorModal();
 }
 
 function cerrarEditorModal() {
   EDITOR_CTX = null;
+  window._editorCCList = [];
   const m = document.getElementById('editor-modal');
   if (m) m.remove();
 }
@@ -4248,6 +4251,14 @@ function renderEditorModal() {
         }
         return '';
       })()}
+      <div style="margin-top:12px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+          <span style="font-size:11px;color:var(--text2)">📧 CC (copiar a):</span>
+          <button type="button" onclick="abrirSelectorCCModal()" style="margin-left:auto;background:var(--accent);color:#0d1a0f;border:none;border-radius:4px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer">+ Agregar</button>
+        </div>
+        <div id="ed-cc-chips" style="display:flex;flex-wrap:wrap;gap:4px">${(window._editorCCList||[]).length ? (window._editorCCList).map((email,i)=>`<span class="cc-chip">${email}<button type="button" onclick="quitarCCModal(${i})" style="margin-left:4px;color:var(--venta);background:none;border:none;cursor:pointer">×</button></span>`).join('') : '<span style="font-size:10px;color:var(--text3)">Nadie en copia</span>'}</div>
+        <div id="ed-cc-selector" style="display:none;margin-top:8px"></div>
+      </div>
     `;
   } else {
     // Aporte individual
@@ -4590,7 +4601,13 @@ async function guardarCambiosEditor(enviarEmail) {
       if (!corredorasConfig[corrKey]) { alert(`No hay email configurado para la corredora ${corredoraFinal}`); return; }
       
       // Para aportes inyectar corredora en data antes de enviar (la usa enviarEmailOutlook para destinatario)
-      const dataParaEmail = {...data, corredora: corredoraFinal};
+      // Inyectar también los CC agregados manualmente en el modal
+      const ccEditorFinal = [...new Set([...(Array.isArray(data.cc_banqueros)?data.cc_banqueros:[]), ...(window._editorCCList||[])])];
+      const dataParaEmail = {...data, corredora: corredoraFinal, cc_banqueros: ccEditorFinal};
+      // Persistir los CC en la orden
+      if (tabla === 'ordenes' && ccEditorFinal.length) {
+        await SB.from('ordenes').update({cc_banqueros: ccEditorFinal}).eq('id', id).catch(()=>{});
+      }
       const tipo = tabla === 'ordenes' ? 'orden' : 'aporte';
       const r = await enviarEmailOutlook(dataParaEmail, tipo).catch(e => ({ok:false, msg:e.message}));
       if (r.ok) {
@@ -8991,6 +9008,62 @@ function quitarCC(idx) {
   if (window._pendingCCList) {
     window._pendingCCList.splice(idx, 1);
     repintarChipsCC();
+  }
+}
+
+// ── Selector CC para el MODAL de editar orden ──────────────────────
+function abrirSelectorCCModal() {
+  const host = document.getElementById('ed-cc-selector');
+  if (!host) return;
+  if (host.style.display === 'block') { host.style.display = 'none'; return; }
+  const banqueros = (BANKERS_DB || []).filter(b => b.email && b.estado === 'activo');
+  const opcionesBanqueros = banqueros.map(b =>
+    `<button type="button" class="cc-opt" onclick="agregarCCModal('${b.email}')">${b.nombre} <span style="color:var(--text3);font-size:10px">${b.email}</span></button>`
+  ).join('');
+  host.innerHTML = `
+    <div style="font-size:11px;color:var(--text2);margin-bottom:6px">Elegí un banquero o escribí un email:</div>
+    <div style="display:flex;flex-direction:column;gap:4px;max-height:160px;overflow-y:auto;margin-bottom:8px">
+      ${opcionesBanqueros || '<span style="font-size:10px;color:var(--text3)">No hay banqueros con email</span>'}
+    </div>
+    <div style="display:flex;gap:6px">
+      <input id="ed-cc-email-libre" type="email" placeholder="email@ejemplo.cl" style="flex:1;padding:6px 8px;font-size:11px;border:1px solid var(--border2);border-radius:4px;background:var(--surface);color:var(--text);outline:none">
+      <button type="button" onclick="agregarCCModalLibre()" style="background:var(--accent);color:#0d1a0f;border:none;border-radius:4px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">Agregar</button>
+    </div>`;
+  host.style.display = 'block';
+}
+
+function repintarChipsCCModal() {
+  const host = document.getElementById('ed-cc-chips');
+  if (!host) return;
+  const lista = window._editorCCList || [];
+  host.innerHTML = lista.length
+    ? lista.map((email,i)=>`<span class="cc-chip">${email}<button type="button" onclick="quitarCCModal(${i})" style="margin-left:4px;color:var(--venta);background:none;border:none;cursor:pointer">×</button></span>`).join('')
+    : '<span style="font-size:10px;color:var(--text3)">Nadie en copia</span>';
+}
+
+function agregarCCModal(email) {
+  if (!window._editorCCList) window._editorCCList = [];
+  if (!window._editorCCList.includes(email)) window._editorCCList.push(email);
+  repintarChipsCCModal();
+  const sel = document.getElementById('ed-cc-selector');
+  if (sel) sel.style.display = 'none';
+}
+
+function agregarCCModalLibre() {
+  const input = document.getElementById('ed-cc-email-libre');
+  if (!input) return;
+  const email = input.value.trim();
+  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
+    alert('Email inválido. Escribí un email válido (ej: nombre@empresa.cl)');
+    return;
+  }
+  agregarCCModal(email);
+}
+
+function quitarCCModal(idx) {
+  if (window._editorCCList) {
+    window._editorCCList.splice(idx, 1);
+    repintarChipsCCModal();
   }
 }
 
