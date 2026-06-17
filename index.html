@@ -2069,18 +2069,7 @@ function renderRecomendacion(text){
   const titulo = grupos.length
     ? `Top ${fondos.length} en <strong>${etiqueta}</strong> por costo-beneficio`
     : `Top ${fondos.length} fondos por costo-beneficio (eficiencia = rent. bruta / TAC)`;
-  const cards = fondos.map((f,i)=>`
-    <div style="border:1px solid var(--border2);border-radius:var(--r2);padding:8px 10px;margin-bottom:6px;background:var(--surface)">
-      <div style="font-weight:600;color:var(--text);font-size:12px;margin-bottom:3px">${i+1}. ${f.n}</div>
-      <div style="font-size:9px;color:var(--text3);margin-bottom:5px">${f.c}${f.ns>1?' · '+f.ns+' series':''}</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--text2)">
-        <span><b style="color:var(--accent)">TAC ${_fmtNum(f.tac,2)}%</b></span>
-        <span>Rent 1a ${_fmtPctDec(f.rn)}</span>
-        <span>Eficiencia <b style="color:var(--accent)">${f.ef==null?'—':_fmtNum(f.ef,1)}</b></span>
-        <span style="color:var(--text3)">Sharpe ${_fmtNum(f.sh,2)}</span>
-      </div>
-      <button class="alias-opt" style="margin-top:6px" onclick="recomendarOperar(${i})">Operar este</button>
-    </div>`).join('');
+  const cards = fondos.map((f,i)=>_fondoCardHtml(f,i)).join('');
   const masNota = total>fondos.length ? `<div style="font-size:9px;color:var(--text3);margin-top:2px">Mostrando ${fondos.length} de ${total} fondos con datos en esta categoría.</div>` : '';
   const filtroNota = grupos.length ? '' : `<div style="font-size:9px;color:var(--text3);margin-top:2px">Filtrá por categoría: "renta fija", "money market", "acciones", "alternativos", "balanceados".</div>`;
   botMsg(titulo+'.', `<div class="alias-suggestion" style="margin-top:6px">${cards}${masNota}${filtroNota}</div>`);
@@ -2112,6 +2101,145 @@ function prefillOrdenNemo(nemo, serie){
     if (typeof autoResize==='function') autoResize(input);
   }
   botMsg(`Listo para operar <strong>${nemo}</strong>${serie?' · Serie '+serie:''}. Completá monto y cliente (ej: <em>compra 10 millones de ${nemo} a Juan Pérez</em>).`);
+}
+
+// Tarjeta de un fondo de FONDOS_RANK (compartida por recomendación y búsqueda directa)
+function _fondoCardHtml(f, i){
+  return `<div style="border:1px solid var(--border2);border-radius:var(--r2);padding:8px 10px;margin-bottom:6px;background:var(--surface)">
+      <div style="font-weight:600;color:var(--text);font-size:12px;margin-bottom:3px">${i+1}. ${f.n}</div>
+      <div style="font-size:9px;color:var(--text3);margin-bottom:5px">${f.c}${f.ns>1?' · '+f.ns+' series':''}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--text2)">
+        <span><b style="color:var(--accent)">TAC ${_fmtNum(f.tac,2)}%</b></span>
+        <span>Rent 1a ${_fmtPctDec(f.rn)}</span>
+        <span>Eficiencia <b style="color:var(--accent)">${f.ef==null?'—':_fmtNum(f.ef,1)}</b></span>
+        <span style="color:var(--text3)">Sharpe ${_fmtNum(f.sh,2)}</span>
+      </div>
+      <button class="alias-opt" style="margin-top:6px" onclick="recomendarOperar(${i})">Operar este</button>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// BÚSQUEDA DIRECTA DE UN FONDO (ficha sobre FONDOS_RANK)
+// ═══════════════════════════════════════════════════════════
+const BUSCA_TRIGGER = /\b(busc[aá]\w*|fich[ao]|info(rmaci[oó]n)?\s+(de|del)|datos\s+(de|del)|tac\s+(de|del)|cu[aá]nto\s+(rinde|cuesta|tiene))\b/i;
+
+function _extraerNombreFondo(text){
+  return text
+    .replace(/\b(busc[aá]\w*|fich[ao]|info(rmaci[oó]n)?|datos|tac|cu[aá]nto|rinde|cuesta|tiene|de|del|el|la|los|las|un|una|fondo|sobre|me|dame|muestrame|mostrame|quiero|ver)\b/gi,' ')
+    .replace(/\s+/g,' ').trim();
+}
+function _scoreNombre(q, nombre){
+  const a = _normRec(q).split(/\s+/).filter(w=>w.length>2);
+  if (!a.length) return 0;
+  const b = _normRec(nombre);
+  let hit = 0; for (const w of a) if (b.includes(w)) hit++;
+  return hit / a.length;
+}
+function buscarFondoFicha(text){
+  const q = _extraerNombreFondo(text);
+  if (q.length < 3){ botMsg('¿Qué fondo querés buscar? Ej: <em>buscá Moneda Deuda Chile</em> o <em>TAC de Pionero</em>.'); return; }
+  const pool = (typeof FONDOS_RANK!=='undefined') ? FONDOS_RANK : [];
+  const scored = pool.map(f=>({f, s:_scoreNombre(q, f.n)})).filter(x=>x.s>=0.5).sort((a,b)=>b.s-a.s);
+  if (!scored.length){
+    // Sin datos de costo-beneficio: ¿al menos existe como operable?
+    const cands = (typeof buscarFondo==='function') ? buscarFondo(q, 0.55) : [];
+    if (cands.length){
+      const opts = cands.slice(0,5).map(c=>`<button class="alias-opt fondo-opt" onclick="prefillOrdenNemo('${c.nemo}','${(c.serie||'')}')">${c.nemo}${c.serie?' · Serie '+c.serie:''} · ${c.nombre}</button>`).join('');
+      botMsg(`No tengo datos de costo-beneficio de "<strong>${q}</strong>", pero sí está como operable:`, `<div class="alias-suggestion"><div class="alias-sug-opts" style="flex-direction:column">${opts}</div></div>`);
+    } else {
+      botMsg(`No encontré ningún fondo que matchee "<strong>${q}</strong>". Probá con otro nombre.`);
+    }
+    return;
+  }
+  const matches = scored.slice(0,5).map(x=>x.f);
+  window.__lastRecs = matches;
+  if (matches.length===1 || scored[0].s >= 0.9 && (scored.length===1 || scored[1].s < scored[0].s)){
+    botMsg(`Ficha de <strong>${matches[0].n}</strong>:`, `<div class="alias-suggestion" style="margin-top:6px">${_fondoCardHtml(matches[0],0)}</div>`);
+  } else {
+    const cards = matches.map((f,i)=>_fondoCardHtml(f,i)).join('');
+    botMsg(`Encontré ${matches.length} fondos para "<strong>${q}</strong>":`, `<div class="alias-suggestion" style="margin-top:6px">${cards}</div>`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// PULSO EN EL CHAT — reusa el render real del Pulso (estilo idéntico)
+// ═══════════════════════════════════════════════════════════
+const PULSO_TRIGGER = /\b(pulso|mercado\s+hoy|indicadores?\s+macro)\b|\ba\s+cu[aá]nto\b|\bcu[aá]nto\s+(est[aá]|cerr[oó]|vale)\b|\bc[oó]mo\s+(va|van|est[aá]n?|viene[n]?|cerr[oó]|cerraron|anda[n]?)\b[\s\S]*\b(mercado|renta\s+fija|renta\s+variable|acciones|alternativ\w*|money\s*market|deuda|bonos|retorno\s+total|macro|[ií]ndices?|ipsa|btu|s&p|nasdaq|dow)\b/i;
+
+function _pulsoTs(){ const e=document.getElementById('pulso-last-update'); return e&&e.textContent ? e.textContent.replace('⏱','').trim() : ''; }
+function _avgK(fondos, k){ const a=(fondos||[]).map(f=>typeof f[k]==='number'?f[k]:null).filter(v=>v!=null); return a.length ? a.reduce((x,y)=>x+y,0)/a.length : null; }
+
+function _pulsoMatchCats(t){
+  const cats = PULSO_SNAPSHOT.categorias || [];
+  let hit = cats.filter(c=>t.includes(_normRec(c.nombre)));
+  if (hit.length) return hit;
+  const kw = [
+    [/renta fija|deuda|bonos|fixed income/, /renta fija/],
+    [/renta variable|acciones|equity|bolsa/, /renta variable/],
+    [/alternativ/, /alternativ/],
+    [/retorno total/, /retorno total/],
+    [/de la casa/, /de la casa/],
+    [/albion|comparable/, /albion|comparable/],
+  ];
+  for (const [re,m] of kw){ if (re.test(t)){ const h=cats.filter(c=>m.test(_normRec(c.nombre))); if (h.length) return h; } }
+  return [];
+}
+
+function _pulsoIdxTable(arr){
+  const th=(h,al)=>`<th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:7px 14px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:${al};border-bottom:1px solid var(--border)">${h}</th>`;
+  const head=`<tr>${th('Índice','left')}${th('WTD','center')}${th('MTD','center')}${th('YTD','center')}</tr>`;
+  const rows=arr.map((x,i)=>{const bg=i%2?'var(--p-surface2)':'var(--p-surface)';
+    return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)"><td style="padding:8px 14px;font-weight:600;color:var(--text)">${x.nombre}</td><td style="padding:8px 14px;text-align:center;${pulsoTdClass(x.wtd)}">${fmtPctPulso(x.wtd)}</td><td style="padding:8px 14px;text-align:center;${pulsoTdClass(x.mtd)}">${fmtPctPulso(x.mtd)}</td><td style="padding:8px 14px;text-align:center;${pulsoTdClass(x.ytd)}">${fmtPctPulso(x.ytd)}</td></tr>`;}).join('');
+  return `<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);background:var(--p-surface)"><table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>${head}${rows}</tbody></table></div>`;
+}
+function _pulsoTblPromedios(){
+  const cats=PULSO_SNAPSHOT.categorias||[]; if(!cats.length) return '';
+  const th=(h,al)=>`<th style="background:var(--surface2);color:var(--text2);font-weight:600;padding:7px 14px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:${al};border-bottom:1px solid var(--border)">${h}</th>`;
+  const head=`<tr>${th('Categoría','left')}${th('MTD','center')}${th('YTD','center')}${th('Fondos','center')}</tr>`;
+  const rows=cats.map((c,i)=>{const bg=i%2?'var(--p-surface2)':'var(--p-surface)';const mtd=_avgK(c.fondos,'mtd'),ytd=_avgK(c.fondos,'ytd');
+    return `<tr style="background:${bg};border-bottom:1px solid var(--p-border)"><td style="padding:8px 14px;font-weight:600;color:var(--text)">${c.nombre}</td><td style="padding:8px 14px;text-align:center;${pulsoTdClass(mtd)}">${fmtPctPulso(mtd)}</td><td style="padding:8px 14px;text-align:center;${pulsoTdClass(ytd)}">${fmtPctPulso(ytd)}</td><td style="padding:8px 14px;text-align:center;color:var(--p-muted);font-size:12px">${(c.fondos||[]).length}</td></tr>`;}).join('');
+  return `<div style="margin-top:16px"><div style="font-family:var(--mono);font-size:12px;color:var(--p-accent);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">// Promedios por categoría</div><div style="overflow-x:auto;border-radius:8px;border:1px solid var(--p-border);background:var(--p-surface)"><table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>${head}${rows}</tbody></table></div></div>`;
+}
+function _pulsoResumenCard(){
+  const macro = PULSO_SNAPSHOT.indices_macro || [];
+  const macroBlock = macro.length ? `<div><div style="font-family:var(--mono);font-size:12px;color:var(--p-accent);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">// Índices macro</div>${_pulsoIdxTable(macro)}</div>` : '';
+  return pulsoPageWrap(`<div style="font-family:var(--mono);font-size:18px;color:var(--p-accent);margin-bottom:14px;font-weight:600">Pulso del mercado</div>${macroBlock}${_pulsoTblPromedios()}`);
+}
+
+async function renderPulsoChat(text){
+  if (typeof PULSO_SNAPSHOT==='undefined' || !PULSO_SNAPSHOT){
+    try { if (typeof cargarPulsoSnapshot==='function') await cargarPulsoSnapshot(); } catch(e){}
+  }
+  if (typeof PULSO_SNAPSHOT==='undefined' || !PULSO_SNAPSHOT){
+    botMsg('No puedo leer el pulso ahora — el backend (Supabase) no responde o todavía no se importó el Excel del Pulso.');
+    return;
+  }
+  const t = _normRec(text);
+  const macro = PULSO_SNAPSHOT.indices_macro || [];
+  const cats  = PULSO_SNAPSHOT.categorias || [];
+  const ts = _pulsoTs();
+  const fecha = ts ? ` <span style="font-size:10px;color:var(--text3)">(${ts})</span>` : '';
+
+  // Macro explícito
+  if (/\b(macro|indicadores|internacional|usa|globales?)\b/.test(t) && !_pulsoMatchCats(t).length){
+    botMsg('Indicadores macro del Pulso'+fecha, renderPulsoMacro()); return;
+  }
+  // Categoría nombrada (renta fija, alternativos, etc.)
+  const catsHit = _pulsoMatchCats(t);
+  if (catsHit.length){
+    catsHit.slice(0,3).forEach(c => botMsg('Pulso · '+c.nombre+fecha, renderPulsoCategoria(c)));
+    return;
+  }
+  // Índice nombrado
+  const idxHit = macro.find(m=>{const n=_normRec(m.nombre); return n && t.includes(n);});
+  if (idxHit){ botMsg('Pulso · '+idxHit.nombre+fecha, pulsoPageWrap(_pulsoIdxTable([idxHit]))); return; }
+  // Fondo nombrado dentro del pulso
+  for (const c of cats){
+    const f=(c.fondos||[]).find(f=>{const n=_normRec(f.nombre); return n && n.length>3 && t.includes(n);});
+    if (f){ botMsg('Pulso · '+f.nombre+fecha, renderPulsoCategoria({nombre:c.nombre, fondos:[f]})); return; }
+  }
+  // General → resumen (macro + promedios por categoría)
+  botMsg('Pulso del mercado'+fecha, _pulsoResumenCard());
 }
 
 // CHAT state
@@ -8219,6 +8347,13 @@ function splitEnOrdenes(text) {
 function processBloque(text) {
   // Si empieza con "cruce" (o variante) → ir directo, nunca dividir
   const textClean = text.replace(/^(hola[,!.]*|buenas[,!.]*|hey[,!.]*)\s*/i,'').trim();
+  // Pulso del mercado — reusa el render real del Pulso
+  if (PULSO_TRIGGER.test(textClean)) { renderPulsoChat(textClean); return; }
+  // Búsqueda directa de un fondo (ficha) — sin chocar con recomendación ni órdenes
+  if (BUSCA_TRIGGER.test(textClean) && !REC_TRIGGER.test(textClean)
+      && !/\b(compra|vende|venta|vendi|aporta|aporte|aport[oó]|rescat|transfier|transfere|transferencia|saldo|abono)\b/i.test(textClean)) {
+    buscarFondoFicha(textClean); return;
+  }
   // Recomendación de fondos por costo-beneficio — antes de dividir en órdenes
   if (REC_TRIGGER.test(textClean)) { renderRecomendacion(textClean); return; }
   if (/^(cruce|cross|cruceme|cruzame)\b/i.test(textClean)) {
