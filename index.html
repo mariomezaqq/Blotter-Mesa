@@ -35,7 +35,7 @@
   --compra:#4ade80;
   --compra-dim:#0f2d1a;
   --r:6px;--r2:10px;--r3:14px;
-  --font:'IBM Plex Sans',sans-serif;
+  --font:'Lato','IBM Plex Sans',sans-serif;
   --mono:'IBM Plex Mono',monospace;
   --chat-w:420px;
 }
@@ -331,6 +331,10 @@ th{
 td{padding:7px 10px;border-bottom:1px solid var(--border);color:var(--text)}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--surface2)}
+/* ── Tema "Pulso" en todas las secciones: zebra + hover verde ──
+   (las tablas del Pulso y del buscador pintan su bg inline → no se ven afectadas) */
+.section:not(#sec-ordenes) tbody tr:nth-child(even) td{background:rgba(255,255,255,.022)}
+.section tbody tr:hover td{background:rgba(0,229,150,.08)}
 .mono{font-family:var(--mono);font-size:11px}
 .right{text-align:right}
 .empty{text-align:center;padding:28px;color:var(--text3);font-family:var(--mono);font-size:11px}
@@ -1557,6 +1561,18 @@ tr:hover td{background:var(--surface2)}
           </div>
           <div id="pulso-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px;overflow-x:auto"></div>
           <div id="pulso-content"></div>
+
+          <!-- ── Buscador de fondos (estilo Pulso) ── -->
+          <div id="pulso-buscador" style="margin-top:24px;max-width:620px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.25);overflow:hidden;font-family:'Lato','Inter',sans-serif">
+            <div style="background:var(--surface2);padding:10px 16px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid var(--border)">// Buscador de fondos</div>
+            <div style="padding:14px 16px">
+              <input id="buscador-fondos-input" type="text" placeholder="Buscar fondo por nombre…" autocomplete="off"
+                oninput="renderBuscadorFondos(this.value)"
+                onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"
+                style="width:100%;box-sizing:border-box;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;font-family:'Lato',var(--font);outline:none;transition:border-color .15s">
+              <div id="buscador-fondos-result" style="margin-top:12px"></div>
+            </div>
+          </div>
         </div>
 
         <!-- ── CONFIG ── -->
@@ -2240,6 +2256,48 @@ async function renderPulsoChat(text){
   }
   // General → resumen (macro + promedios por categoría)
   botMsg('Pulso del mercado'+fecha, _pulsoResumenCard());
+}
+
+// Buscador de fondos visible en la sección Pulso (estilo Pulso, sobre FONDOS_RANK)
+function renderBuscadorFondos(q){
+  const el = document.getElementById('buscador-fondos-result');
+  if (!el) return;
+  const pool = (typeof FONDOS_RANK!=='undefined') ? FONDOS_RANK : [];
+  q = (q||'').trim();
+  let items;
+  if (q.length < 2){
+    items = pool.slice(0, 8); // FONDOS_RANK ya viene ordenado por eficiencia desc
+  } else {
+    const nq = _normRec(q);
+    items = pool
+      .map(f => ({f, s: _normRec(f.n).includes(nq) ? 1 : _scoreNombre(q, f.n)}))
+      .filter(x => x.s >= 0.4)
+      .sort((a,b) => b.s - a.s || ((b.f.ef==null?-1:b.f.ef) - (a.f.ef==null?-1:a.f.ef)))
+      .slice(0, 12).map(x => x.f);
+  }
+  if (!items.length){
+    el.innerHTML = `<div style="color:var(--text2);font-size:12px;padding:8px 2px">Sin resultados para "${q}".</div>`;
+    return;
+  }
+  const colPct = v => v==null ? 'color:var(--text2)' : (v>0 ? 'color:var(--accent);font-weight:700' : v<0 ? 'color:var(--venta);font-weight:700' : 'color:var(--text2)');
+  const pct = v => v==null ? '—' : ((v*100>=0?'+':'') + (v*100).toFixed(1).replace('.',',') + '%');
+  const th = (h,al,w)=>`<th style="width:${w};background:var(--surface2);color:var(--text2);font-weight:600;padding:6px 8px;font-size:9px;text-transform:uppercase;letter-spacing:.05em;text-align:${al};border-bottom:1px solid var(--border)">${h}</th>`;
+  const head = `<tr>${th('Fondo','left','44%')}${th('TAC','center','14%')}${th('Rent 1a','center','16%')}${th('Efic.','center','13%')}${th('Sharpe','center','13%')}</tr>`;
+  const rows = items.map((f,i)=>{
+    const bg = i%2 ? 'var(--surface2)' : 'var(--surface)';
+    return `<tr style="background:${bg};border-bottom:1px solid var(--border)" onmouseover="this.style.background='rgba(0,229,150,0.08)'" onmouseout="this.style.background='${bg}'">
+      <td style="padding:7px 8px;word-break:break-word"><div style="font-weight:600;color:var(--text);font-size:12px;line-height:1.25">${f.n}</div><div style="font-size:9px;color:var(--text3)">${f.c}</div></td>
+      <td style="padding:7px 8px;text-align:center;color:var(--accent);font-weight:700;font-size:12px">${_fmtNum(f.tac,2)}%</td>
+      <td style="padding:7px 8px;text-align:center;font-size:12px;${colPct(f.rn)}">${pct(f.rn)}</td>
+      <td style="padding:7px 8px;text-align:center;color:var(--text);font-weight:700;font-size:12px">${f.ef==null?'—':_fmtNum(f.ef,1)}</td>
+      <td style="padding:7px 8px;text-align:center;color:var(--text2);font-size:12px">${_fmtNum(f.sh,2)}</td>
+    </tr>`;
+  }).join('');
+  const titulo = q.length<2 ? 'Top por eficiencia (costo-beneficio)' : `${items.length} resultado${items.length>1?'s':''}`;
+  el.innerHTML = `<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;font-family:var(--mono)">${titulo}</div>
+    <div style="border:1px solid var(--border);border-radius:6px;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:440px">${head}${rows}</table>
+    </div>`;
 }
 
 // CHAT state
@@ -12471,6 +12529,7 @@ setTimeout(() => {
     cargarValoresCuotaCache();
     cargarPulsoSnapshot();
   }
+  if (typeof renderBuscadorFondos === 'function') renderBuscadorFondos('');
 }, 2000);
 
 // Show email dest field when checkbox is toggled for aportes
