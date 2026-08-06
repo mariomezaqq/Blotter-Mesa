@@ -7096,7 +7096,8 @@ function handleMissingField(text) {
         parsed.precio = Math.round(vc.valor * 100) / 100;
         parsed.navFlag = false;
         const fechaCorta = vc.fecha.split('-').reverse().join('/');
-        botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>`);
+        const aviso = avisoValorCuotaAtrasado(vc) || '';
+        botMsg(`📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>${aviso}`);
         break;
       }
       
@@ -12088,6 +12089,25 @@ function getValorCuotaNAV(nemo) {
   if (!nemo) return null;
   const up = nemo.toUpperCase().trim();
   return VALORES_CUOTA_CACHE[up] || null;
+}
+
+// Fecha (YYYY-MM-DD) del último día hábil esperado (ayer, saltando sáb/dom).
+// No conoce feriados de Chile: en feriado va a marcar el VC como "atrasado"
+// aunque en realidad esté al día — falso positivo aceptable (mejor avisar de más
+// que operar con un valor viejo sin darse cuenta).
+function ultimoDiaHabilEsperado() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// null si el VC esta al dia; si no, un aviso HTML para mostrar en el chat.
+function avisoValorCuotaAtrasado(vc) {
+  const esperado = ultimoDiaHabilEsperado();
+  if (vc.fecha >= esperado) return null;
+  const espCorto = esperado.split('-').reverse().join('/');
+  return `<br><span style="color:var(--venta);font-weight:600">⚠ Este valor cuota NO es del último día hábil (se esperaba ${espCorto}) — puede estar desactualizado, verificá antes de enviar.</span>`;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
