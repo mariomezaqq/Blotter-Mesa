@@ -61,6 +61,20 @@ message("OK: ", length(filas), " / ", nrow(mapeo), " fondos scrapeados.",
 
 if (!length(filas)) stop("Ningun fondo scrapeado. Abortando sin subir nada (posible token vencido).")
 
+# Dedup por nemo (last-wins): FONDOS_DB tiene nemos duplicados en algunos fondos
+# (bug preexistente del catalogo, no de este script) y Supabase rechaza un upsert
+# que intente afectar la misma fila (nemo, fecha) dos veces en un mismo batch.
+nemos_vistos <- character()
+filas_dedup <- list()
+for (f in rev(filas)) {
+  if (f$nemo %in% nemos_vistos) next
+  nemos_vistos <- c(nemos_vistos, f$nemo)
+  filas_dedup[[length(filas_dedup) + 1]] <- f
+}
+if (length(filas_dedup) < length(filas))
+  message("Nemos duplicados en el catalogo: ", length(filas) - length(filas_dedup), " fila(s) descartada(s) antes de subir.")
+filas <- filas_dedup
+
 BATCH <- 300
 for (i in seq(1, length(filas), by = BATCH)) {
   lote <- filas[i:min(i + BATCH - 1, length(filas))]
