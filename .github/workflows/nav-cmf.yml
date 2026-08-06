@@ -1,0 +1,37 @@
+name: Actualizar NAV (CMF) del Blotter
+
+# Corre todos los dias a las 11:00 UTC (= 07:00 Chile invierno, 08:00 verano),
+# antes de que arranque la mesa. Tambien se puede disparar a mano desde Actions.
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+jobs:
+  actualizar-nav:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CMF_RECAPTCHA_TOKEN: ${{ secrets.CMF_RECAPTCHA_TOKEN }}
+      CMF_COOKIES: ${{ secrets.CMF_COOKIES }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Instalar paquetes R
+        run: |
+          install.packages(c("httr","rvest","dplyr","stringr","lubridate","jsonlite"))
+        shell: Rscript {0}
+
+      - name: Scrapear valor cuota CMF y subir a Supabase
+        run: |
+          options(timeout = 600)
+          source("cmf/actualizar_nav.R")
+        shell: Rscript {0}
