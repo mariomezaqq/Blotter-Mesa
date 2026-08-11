@@ -4116,6 +4116,23 @@ function parsearNumeroChileno(s) {
   return parseFloat(s) || 0;
 }
 
+// Aplica el valor cuota del nemo como precio en el editor de la orden (misma
+// idea que usarNavEnConfirm() del chat, pero para cuando se completa el
+// precio despues -- ej. una orden que se mando "a mercado" y ahora hay que
+// dejarle el precio real antes de enviar el email).
+function usarNavEnEditor() {
+  const nemoEl = document.getElementById('ed-nemo');
+  const precioEl = document.getElementById('ed-precio');
+  if (!nemoEl || !precioEl) return;
+  const vc = getValorCuotaNAV(nemoEl.value);
+  if (!vc) {
+    alert(`No tengo valor cuota guardado para ${nemoEl.value}.`);
+    return;
+  }
+  precioEl.value = vc.valor;
+  autoCalcCantidad();
+}
+
 function autoCalcCantidad() {
   const precioEl = document.getElementById('ed-precio');
   const cantidadEl = document.getElementById('ed-cantidad');
@@ -4459,7 +4476,7 @@ function renderEditorModal() {
         <div class="field"><label>RUT</label><input id="ed-rut" type="text" value="${row.rut||''}"></div>
         <div class="field"><label>Cuenta</label><input id="ed-cta" type="text" value="${row.cta||''}"></div>
         <div class="field"><label>Cantidad${(!row.cantidad && row.monto)?' <span style="font-size:9px;color:var(--text2)">(auto)</span>':''}</label><input id="ed-cantidad" type="number" value="${row.cantidad||''}" oninput="recalcComisionEditor()" ${(!row.cantidad && row.monto)?'disabled placeholder="Se calcula con monto/precio" style="opacity:.5;cursor:not-allowed"':''}></div>
-        <div class="field"><label>Precio</label><input id="ed-precio" type="text" inputmode="decimal" value="${row.precio||''}" oninput="autoCalcCantidad()" placeholder="ej: 1.055,54"></div>
+        <div class="field"><label>Precio${/^CF[IM]/i.test(row.nemo||'')?` <button type="button" onclick="usarNavEnEditor()" style="font-size:9px;padding:1px 6px;margin-left:4px;background:var(--info-dim);color:var(--info);border:1px solid var(--info);border-radius:4px;cursor:pointer;font-family:var(--mono)">📊 Usar NAV</button>`:''}</label><input id="ed-precio" type="text" inputmode="decimal" value="${row.precio||''}" oninput="autoCalcCantidad()" placeholder="ej: 1.055,54"></div>
         <div class="field"><label>Monto (P×Q)${(!row.cantidad && row.monto)?' <span style="font-size:9px;color:var(--accent)">★</span>':''}</label><input id="ed-monto-orden" type="text" inputmode="decimal" value="${row.monto||''}" placeholder="ej: 20.000.000" oninput="autoCalcCantidad()"${(!row.cantidad && row.monto)?' style="border-color:var(--accent)"':''}></div>
         <div class="field"><label>Condición</label>
           <select id="ed-condicion">
@@ -6863,11 +6880,14 @@ function selectClienteBtn(rut) {
 // Buscador de clientes embebido en el chat: input con filtro en vivo por
 // nombre o RUT, para cuando el parser no pudo identificar al cliente solo.
 function buscarClienteResultsHtml(query) {
-  const nq = (query||'').trim().toUpperCase();
+  // Sin tildes en ambos lados: "Hector Pena" (como lo tipea alguien apurado)
+  // tiene que encontrar a "HECTOR PEÑA" igual.
+  const sinTildes = s => (s||'').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  const nq = sinTildes((query||'').trim());
   if (nq.length < 2) return '<div style="color:var(--text2);font-size:11px;padding:4px 2px">Escribí al menos 2 letras del nombre, o el RUT.</div>';
   const nqRut = normalizeRut(nq);
   const items = DB_CLIENTES.filter(c =>
-    c.nombre.toUpperCase().includes(nq) || (nqRut.length >= 3 && normalizeRut(c.rut).includes(nqRut))
+    sinTildes(c.nombre).includes(nq) || (nqRut.length >= 3 && normalizeRut(c.rut).includes(nqRut))
   ).slice(0, 8);
   if (!items.length) return `<div style="color:var(--text2);font-size:11px;padding:4px 2px">Sin resultados para "${query}". Si es cliente nuevo, agregalo en la sección <strong>Clientes</strong>.</div>`;
   return items.map(c =>
@@ -6885,7 +6905,12 @@ function buscarClienteHtml(queryInicial) {
       oninput="document.getElementById('buscar-cliente-res').innerHTML = buscarClienteResultsHtml(this.value)"
       style="width:100%;padding:6px 8px;margin-bottom:6px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px;outline:none;font-family:var(--font)">
     <div id="buscar-cliente-res" class="alias-sug-opts" style="flex-direction:column;max-height:220px;overflow-y:auto">${buscarClienteResultsHtml(q)}</div>
+    <button onclick="cancelarBuscarCliente()" style="margin-top:6px;background:transparent;border:1px solid var(--border2);color:var(--text2);border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:var(--font)">✕ Cancelar</button>
   </div>`;
+}
+function cancelarBuscarCliente() {
+  chatContext = null; pendingOrder = null;
+  botMsg('Cancelado. Escribí una nueva instrucción cuando quieras.');
 }
 
 function selectCuentaAporteBtn(cta, corredora) {
