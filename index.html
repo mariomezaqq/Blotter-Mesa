@@ -3385,7 +3385,7 @@ async function enviarEmailOutlook(datos, tipo='orden', destEmail=null) {
 // ═══════════════════════════════════════════════════════════
 async function cargarClientes() {
   const { data } = await SB.from('clientes').select('*, cuentas(*)').order('nombre');
-  DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[], titular_rut:c.titular_rut||null, banquero_asignado:c.banquero_asignado||null}));
+  DB_CLIENTES = (data||[]).map(c=>({...c, cuentas:c.cuentas||[], titular_rut:c.titular_rut||null, banquero_asignado:c.agente||null}));
 }
 async function descartarOTP(email) {
   // Si la tabla no existe, no hacer nada (silent)
@@ -5967,6 +5967,33 @@ const STOP = new Set(['PARA','CON','DE','LA','EL','UN','UNA','LOS','LAS','POR','
   'PALOS','MILLONES','LUCAS','FONDO','SERIE','RESCATE','APORTE','SALDO','HACER',
   'UNA','HACEME','HAZ','HAGA','QUIERO','PARA','POR','A','DE']);
 
+// Quita del texto las palabras del nombre real de un fondo, junto con el
+// nemo/alias/corredora ya identificados, comparando de forma normalizada
+// (sin tildes, por prefijo) para que esas palabras no se cuelen como si
+// fueran el nombre de un cliente (ej. "financiamiento"/"garantia" en
+// "BTG Financiamiento con Garantías Inmobiliarias").
+function stripPalabrasFondo(texto, {nemo, nemoRaw, corredora} = {}) {
+  const normTok = s => (s||'').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  const blockTokens = new Set();
+  const addTokens = s => (s||'').split(/\s+/).forEach(w => { if (w.length > 2) blockTokens.add(normTok(w)); });
+  addTokens(nemoRaw);
+  addTokens(nemo);
+  addTokens(corredora);
+  if (nemo) {
+    const fondoObj = FONDOS_DB.find(f => (f.nemo||'').toUpperCase() === nemo.toUpperCase());
+    if (fondoObj?.nombre) addTokens(fondoObj.nombre);
+  }
+  if (!blockTokens.size) return texto;
+  return (texto||'').split(/\s+/).filter(w => {
+    const nw = normTok(w);
+    if (!nw) return true;
+    for (const b of blockTokens) {
+      if (nw === b || (nw.length >= 4 && b.length >= 4 && (nw.startsWith(b.slice(0,4)) || b.startsWith(nw.slice(0,4))))) return false;
+    }
+    return true;
+  }).join(' ');
+}
+
 function resolveCliente(text) {
   const up = text.toUpperCase();
 
@@ -6455,12 +6482,10 @@ function parseOrden(text, forceOp, opts={}) {
   }
   const nemoRaw    = nemoFound?.raw || '';
 
-  // Strip nemo (raw + resolved) from text so it doesn't bleed into client name
-  let textForClient = text;
-  if (nemoRaw)              textForClient = textForClient.replace(new RegExp('\\b'+nemoRaw+'\\b','gi'), '');
-  if (nemoResult.resolved)  textForClient = textForClient.replace(new RegExp('\\b'+nemoResult.resolved+'\\b','gi'), '');
-  // Also strip corredora
-  if (corredora)            textForClient = textForClient.replace(new RegExp('\\b'+corredora+'\\b','gi'), '');
+  // Strip nemo/alias/corredora Y las palabras del nombre real del fondo (aunque
+  // el nemo haya resuelto de una por un alias aprendido tipo "BTG") para que no
+  // se cuelen en el nombre del cliente.
+  const textForClient = stripPalabrasFondo(text, {nemo: nemoResult.resolved, nemoRaw, corredora});
   const clientResult = resolveCliente(textForClient);
 
   // ── Reinterpretar número como MONTO en pesos (no acciones) ──
@@ -6918,8 +6943,14 @@ function handleNemoClarify(text) {
     return;
   }
 
-  // Safety: never learn an alias that is too long (full sentence) or a stopword
-  const NEVER_ALIAS = new Set(['DEL','DE','LA','EL','AL','UN','UNA','LOS','LAS','POR','VIA','PARA']);
+  // Safety: never learn an alias that is too long (full sentence), a stopword,
+  // o el nombre de un banco/corredora — esos son ambiguos por naturaleza (varios
+  // fondos comparten el mismo prefijo, ej. "BTG"), aprenderlos como alias exacto
+  // de UN fondo hace que la próxima vez que alguien diga solo "BTG" resuelva mal
+  // en silencio, sin preguntar, aunque sea para un fondo BTG distinto.
+  const NEVER_ALIAS = new Set(['DEL','DE','LA','EL','AL','UN','UNA','LOS','LAS','POR','VIA','PARA',
+    'SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY',
+    'VALUES','RENTA4','MBI','LV','LC','NEVASA','TANNER','SCOTIA']);
   const raw = (parsed.nemoRaw||'').toUpperCase().trim();
   const shouldLearn = raw && raw !== nemo && raw.length <= 20 && !NEVER_ALIAS.has(raw)
     && !raw.includes(' ') === false || raw.split(' ').length <= 3; // max 3 words as alias
@@ -6949,25 +6980,7 @@ function handleNemoClarify(text) {
   // un nombre de cliente. Si no quedó un cliente resuelto con certeza, reintentamos
   // sacando del texto el nombre real del fondo ahora que lo conocemos.
   if (!parsed.clienteResult || parsed.clienteResult.unknown) {
-    // Comparación normalizada (sin tildes) por prefijo: el mensaje puede traer
-    // "garantia" singular/sin tilde mientras el nombre real del fondo dice
-    // "Garantías" plural con tilde — un match literal se pierde esos casos.
-    const normTok = s => (s||'').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
-    const blockTokens = new Set();
-    const addTokens = s => (s||'').split(/\s+/).forEach(w => { if (w.length > 2) blockTokens.add(normTok(w)); });
-    addTokens(parsed.nemoRaw);
-    addTokens(nemo);
-    addTokens(parsed.corredora);
-    const fondoObj = FONDOS_DB.find(f => (f.nemo||'').toUpperCase() === nemo);
-    if (fondoObj?.nombre) addTokens(fondoObj.nombre);
-    const textForClient2 = (parsed.rawText || '').split(/\s+/).filter(w => {
-      const nw = normTok(w);
-      if (!nw) return true;
-      for (const b of blockTokens) {
-        if (nw === b || (nw.length >= 4 && b.length >= 4 && (nw.startsWith(b.slice(0,4)) || b.startsWith(nw.slice(0,4))))) return false;
-      }
-      return true;
-    }).join(' ');
+    const textForClient2 = stripPalabrasFondo(parsed.rawText, {nemo, nemoRaw: parsed.nemoRaw, corredora: parsed.corredora});
     const clientResult2 = resolveCliente(textForClient2);
     parsed.clienteResult = clientResult2;
     parsed.cliente = clientResult2?.nombre || '';
@@ -11677,19 +11690,21 @@ async function guardarCliente() {
   const rut    = document.getElementById('m-rut').value.trim();
   const nombre = document.getElementById('m-nombre').value.trim();
   const tipo             = document.getElementById('m-tipo').value;
-  const banquero_asignado = document.getElementById('m-banquero')?.value || null;
+  // Columna real en Supabase es "agente" (no "banquero_asignado" -- ese nombre
+  // solo existia en el objeto en memoria y hacia fallar el insert/update entero).
+  const agente = document.getElementById('m-banquero')?.value || null;
   if (!rut||!nombre) { alert('RUT y nombre son obligatorios'); return; }
 
   let clienteId = editId;
 
   if (editId) {
-    await SB.from('clientes').update({nombre, tipo, banquero_asignado}).eq('id', editId);
+    await SB.from('clientes').update({nombre, tipo, agente}).eq('id', editId);
     // Update cuentas propias
     const orig = DB_CLIENTES.find(c=>c.id===editId)?.cuentas||[];
     for (const cu of orig) if (!cuentasModal.find(m=>m.id===cu.id)) await SB.from('cuentas').delete().eq('id',cu.id);
     for (const cu of cuentasModal.filter(m=>!m.id)) await SB.from('cuentas').insert({cliente_id:editId,cta:cu.cta,corredora:cu.corredora||''});
   } else {
-    const {data} = await SB.from('clientes').insert({rut, nombre, tipo, banquero_asignado}).select().single();
+    const {data} = await SB.from('clientes').insert({rut, nombre, tipo, agente}).select().single();
     if (!data) return;
     clienteId = data.id;
     for (const cu of cuentasModal) await SB.from('cuentas').insert({cliente_id:clienteId,cta:cu.cta,corredora:cu.corredora||''});
