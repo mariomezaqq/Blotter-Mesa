@@ -5685,21 +5685,24 @@ function handleChatInput(text) {
       handleMissingAporte(text.trim());
       return;
 
-    case 'await_cliente_select':
+    case 'await_cliente_select': {
       // User typed RUT or name manually
       if (chatContext.parsed) {
-        const found = DB_CLIENTES.find(c => c.rut === text.trim() || normalizeRut(c.rut) === normalizeRut(text.trim()));
+        const t = text.trim();
+        const found = DB_CLIENTES.find(c => c.rut === t || normalizeRut(c.rut) === normalizeRut(t))
+          || (t.length >= 3 ? DB_CLIENTES.find(c => c.nombre.toUpperCase() === t.toUpperCase()) : null);
         if (found) {
           chatContext.parsed.cliente = found.nombre;
           chatContext.parsed.rut = found.rut;
           chatContext.parsed.clienteResult = {cliente:found, rut:found.rut, nombre:found.nombre};
           const p = chatContext.parsed; chatContext = null;
-          checkMissingAndConfirm(p);
+          continuarConCliente(p);
         } else {
-          botMsg('No encontré ese RUT. Seleccioná uno de los botones o ingresá el RUT completo.');
+          botMsg('No encontré ese cliente. Segui escribiendo en el buscador de arriba, o seleccioná uno de los resultados.', buscarClienteHtml(t));
         }
       }
       return;
+    }
 
     case 'await_cuenta_aporte':
       if (chatContext.parsed) {
@@ -6516,20 +6519,21 @@ function parseOrden(text, forceOp, opts={}) {
   }
 
   // ── Client not found → los clientes nuevos se agregan solo en la sección
-  // Clientes, nunca desde el chat (evita que el parser invente/confunda clientes) ──
+  // Clientes, nunca desde el chat (evita que el parser invente/confunda clientes).
+  // Ofrecemos un buscador en vez de solo cortar el flujo. ──
   if (!clientResult) {
-    chatContext = null; pendingOrder = null;
-    botMsg('No encontré a ese cliente en la base. Agregalo primero en la sección <strong>Clientes</strong> y reintentá la orden.');
+    chatContext = {state:'await_cliente_select', parsed};
+    botMsg('No encontré a ese cliente en la base. Buscalo abajo, o agregalo en la sección <strong>Clientes</strong> y reintentá.', buscarClienteHtml(''));
     return;
   }
   if (clientResult.unknown && clientResult.nameOnly) {
-    chatContext = null; pendingOrder = null;
-    botMsg(`No encontré a <strong>${clientResult.nombre}</strong> en la base. Agregalo primero en la sección <strong>Clientes</strong> y reintentá la orden.`);
+    chatContext = {state:'await_cliente_select', parsed};
+    botMsg(`No encontré a <strong>${clientResult.nombre}</strong> en la base. Buscalo abajo, o agregalo en la sección <strong>Clientes</strong> y reintentá.`, buscarClienteHtml(clientResult.nombre));
     return;
   }
   if (clientResult.unknown && clientResult.rut) {
-    chatContext = null; pendingOrder = null;
-    botMsg(`RUT <strong>${clientResult.rut}</strong> no está registrado. Agregalo primero en la sección <strong>Clientes</strong> y reintentá la orden.`);
+    chatContext = {state:'await_cliente_select', parsed};
+    botMsg(`RUT <strong>${clientResult.rut}</strong> no está registrado. Buscalo abajo, o agregalo en la sección <strong>Clientes</strong> y reintentá.`, buscarClienteHtml(''));
     return;
   }
 
@@ -6797,6 +6801,16 @@ function handleMissingAporte(text) {
   checkMissingAporte(parsed);
 }
 
+// Retoma el flujo de la operación (orden/aporte/rescate/abono/transferencia/cruce)
+// una vez que el cliente ya quedó resuelto.
+function continuarConCliente(p) {
+  if (p.type === 'aporte') checkMissingAporte(p);
+  else if (p.type === 'abono') checkMissingAbono(p);
+  else if (p.type === 'transferencia') checkMissingTransferencia(p);
+  else if (p.type === 'cruce') continuarFlujoCruce(p);
+  else checkMissingAndConfirm(p);
+}
+
 function selectClienteBtn(rut) {
   if (!chatContext?.parsed) return;
   const found = DB_CLIENTES.find(c => c.rut === rut);
@@ -6805,7 +6819,35 @@ function selectClienteBtn(rut) {
   chatContext.parsed.rut = found.rut;
   chatContext.parsed.clienteResult = {cliente:found, rut:found.rut, nombre:found.nombre};
   const p = chatContext.parsed; chatContext = null;
-  checkMissingAndConfirm(p);
+  continuarConCliente(p);
+}
+
+// Buscador de clientes embebido en el chat: input con filtro en vivo por
+// nombre o RUT, para cuando el parser no pudo identificar al cliente solo.
+function buscarClienteResultsHtml(query) {
+  const nq = (query||'').trim().toUpperCase();
+  if (nq.length < 2) return '<div style="color:var(--text2);font-size:11px;padding:4px 2px">Escribí al menos 2 letras del nombre, o el RUT.</div>';
+  const nqRut = normalizeRut(nq);
+  const items = DB_CLIENTES.filter(c =>
+    c.nombre.toUpperCase().includes(nq) || (nqRut.length >= 3 && normalizeRut(c.rut).includes(nqRut))
+  ).slice(0, 8);
+  if (!items.length) return `<div style="color:var(--text2);font-size:11px;padding:4px 2px">Sin resultados para "${query}". Si es cliente nuevo, agregalo en la sección <strong>Clientes</strong>.</div>`;
+  return items.map(c =>
+    `<button class="alias-opt" onclick="selectClienteBtn('${c.rut}')" style="flex-direction:column;align-items:flex-start;padding:7px 10px;height:auto">
+      <span style="font-weight:600">${c.nombre}</span>
+      <span style="font-size:10px;color:var(--text2);font-family:var(--mono)">${c.rut}</span>
+    </button>`
+  ).join('');
+}
+function buscarClienteHtml(queryInicial) {
+  const q = (queryInicial||'').trim();
+  return `<div class="alias-suggestion" style="margin-top:6px">
+    <div class="alias-sug-title">Buscar cliente</div>
+    <input type="text" placeholder="Nombre o RUT..." value="${q.replace(/"/g,'&quot;')}"
+      oninput="document.getElementById('buscar-cliente-res').innerHTML = buscarClienteResultsHtml(this.value)"
+      style="width:100%;padding:6px 8px;margin-bottom:6px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px;outline:none;font-family:var(--font)">
+    <div id="buscar-cliente-res" class="alias-sug-opts" style="flex-direction:column;max-height:220px;overflow-y:auto">${buscarClienteResultsHtml(q)}</div>
+  </div>`;
 }
 
 function selectCuentaAporteBtn(cta, corredora) {
@@ -6938,17 +6980,18 @@ function handleNemoClarify(text) {
   }
 
   // Sin cliente encontrado, o sólo un candidato débil (posible ruido del nombre
-  // del fondo) → los clientes nuevos se agregan solo en la sección Clientes
+  // del fondo) → buscador de clientes en vez de cortar el flujo sin salida
   if (!parsed.clienteResult || (parsed.clienteResult.unknown && parsed.clienteResult.nameOnly)) {
-    chatContext = null; pendingOrder = null;
+    chatContext = {state:'await_cliente_select', parsed};
     botMsg(parsed.cliente
-      ? `No encontré a <strong>${parsed.cliente}</strong> en la base. Agregalo primero en la sección <strong>Clientes</strong> y reintentá la orden.`
-      : 'No pude identificar al cliente. Agregalo primero en la sección <strong>Clientes</strong> y reintentá la orden.');
+      ? `No encontré a <strong>${parsed.cliente}</strong> en la base. Buscalo abajo, o agregalo en la sección <strong>Clientes</strong>.`
+      : 'No pude identificar al cliente. Buscalo abajo, o agregalo en la sección <strong>Clientes</strong>.',
+      buscarClienteHtml(parsed.cliente||''));
     return;
   }
   if (parsed.clienteResult.unknown && parsed.clienteResult.rut) {
-    chatContext = null; pendingOrder = null;
-    botMsg(`RUT <strong>${parsed.clienteResult.rut}</strong> no está registrado. Agregalo primero en la sección <strong>Clientes</strong> y reintentá la orden.`);
+    chatContext = {state:'await_cliente_select', parsed};
+    botMsg(`RUT <strong>${parsed.clienteResult.rut}</strong> no está registrado. Buscalo abajo, o agregalo en la sección <strong>Clientes</strong>.`, buscarClienteHtml(''));
     return;
   }
 
@@ -7417,11 +7460,11 @@ function parseTransferencia(text) {
 
   if (!clientResult || clientResult.unknown) {
     const name = clientResult?.nombre || extractNameCandidate(text) || '';
-    chatContext = null; pendingOrder = null;
+    chatContext = {state:'await_cliente_select', parsed};
     const msgTxt = clientResult?.rut
       ? `RUT <strong>${clientResult.rut}</strong> no está registrado.`
       : `No encontré a <strong>${name||'ese cliente'}</strong> en la base.`;
-    botMsg(`${msgTxt} Agregalo primero en la sección <strong>Clientes</strong> y reintentá.`);
+    botMsg(`${msgTxt} Buscalo abajo, o agregalo en la sección <strong>Clientes</strong>.`, buscarClienteHtml(name));
     return;
   }
 
@@ -7811,12 +7854,12 @@ function parseAbono(text) {
   
   if (!clientResult || clientResult.unknown) {
     const name = clientResult?.nombre || extractNameCandidate(text) || '';
-    chatContext = null; pendingOrder = null;
+    chatContext = {state:'await_cliente_select', parsed};
     const msgTxt = clientResult?.rut
       ? `RUT <strong>${clientResult.rut}</strong> no está registrado.`
       : name ? `No encontré a <strong>${name}</strong> en la base.`
              : 'No encontré al cliente en la base.';
-    botMsg(`${msgTxt} Agregalo primero en la sección <strong>Clientes</strong> y reintentá.`);
+    botMsg(`${msgTxt} Buscalo abajo, o agregalo en la sección <strong>Clientes</strong>.`, buscarClienteHtml(name));
     return;
   }
 
@@ -8137,15 +8180,15 @@ function parseAporte(text, forceInstruccion) {
   };
   window._pendingCCBanqueros = null;
 
-  // Cliente desconocido → los clientes nuevos se agregan solo en la sección Clientes
+  // Cliente desconocido → buscador de clientes en vez de cortar el flujo sin salida
   if (!clientResult || clientResult.unknown) {
     const name = clientResult?.nombre || extractNameCandidate(text) || '';
-    chatContext = null; pendingOrder = null;
+    chatContext = {state:'await_cliente_select', parsed};
     const msgTxt = clientResult?.rut
       ? `RUT <strong>${clientResult.rut}</strong> no está registrado.`
       : name ? `No encontré a <strong>${name}</strong> en la base.`
              : 'No encontré al cliente en la base.';
-    botMsg(`${msgTxt} Agregalo primero en la sección <strong>Clientes</strong> y reintentá.`);
+    botMsg(`${msgTxt} Buscalo abajo, o agregalo en la sección <strong>Clientes</strong>.`, buscarClienteHtml(name));
     return;
   }
 
