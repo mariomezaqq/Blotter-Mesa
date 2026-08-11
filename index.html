@@ -9279,6 +9279,24 @@ function showParsedConfirm(p) {
     colorStyle  = p.op==='COMPRA' ? 'color:var(--compra)' : 'color:var(--venta)';
     const nemoLabel = p.nemo + (p.nemoResult?.unknown?' <span style="color:var(--warn)">⚠ verificar</span>':p.nemoResult?.exact===false?' <span style="font-size:10px;color:var(--text2)">(alias)</span>':'');
     const montoTotal = p.cantidad && p.precio ? p.cantidad * p.precio : (p.monto || null);
+
+    // Alerta si el precio quedó muy lejos del valor cuota (fat-finger, ej. un
+    // 0 de más/menos) — umbral generoso (20%) para no molestar con premios o
+    // descuentos normales de fondos poco líquidos, sólo casos extremos.
+    let navAlertRow = null;
+    if (p.precio && !p.aMercado && /^CF[IM]/i.test(p.nemo||'')) {
+      const vc = getValorCuotaNAV(p.nemo);
+      if (vc && vc.valor > 0) {
+        const desviacion = ((Number(p.precio) - vc.valor) / vc.valor) * 100;
+        const UMBRAL_ALERTA_NAV = 20;
+        if (Math.abs(desviacion) >= UMBRAL_ALERTA_NAV) {
+          const dir = desviacion > 0 ? 'sobre' : 'bajo';
+          const vcFmt = vc.valor.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
+          navAlertRow = ['⚠ Alerta NAV', `<strong style="color:var(--venta)">${Math.abs(desviacion).toFixed(1)}% ${dir} el valor cuota</strong> <span style="color:var(--text2);font-size:11px">(NAV: $${vcFmt} del ${vc.fecha.split('-').reverse().join('/')}) — revisá el precio</span>`];
+        }
+      }
+    }
+
     rows = [
       ['Operación',  `<span style="${colorStyle};font-weight:700">${p.op}</span>`],
       ['Nemo',        nemoLabel],
@@ -9291,6 +9309,7 @@ function showParsedConfirm(p) {
       p.cantidad  ? ['Cantidad',  Number(p.cantidad).toLocaleString('es-CL')+' acc.'] : null,
       p.aMercado  ? ['Precio',    '<strong style="color:var(--info)">A MERCADO</strong> · lo fija el corredor'] :
       p.precio    ? ['Precio',    '$'+Number(p.precio).toLocaleString('es-CL')]   : null,
+      navAlertRow,
       p.monto && !p.cantidad ? ['Monto aprox.', '$'+Number(p.monto).toLocaleString('es-CL')] : null,
       montoTotal  ? ['Total P×Q',  '<strong style="color:var(--accent)">$'+Math.round(montoTotal).toLocaleString('es-CL')+'</strong>'] : null,
       ['Condición', p.condicion ? `<strong style="color:var(--accent)">${p.condicion}</strong> · ${p.condicion==='PH'?'Paga Hoy':p.condicion==='PM'?'Paga Mañana':'Contado Normal'}` : '<span style="color:var(--warn)">⚠ Sin condición</span>'],
