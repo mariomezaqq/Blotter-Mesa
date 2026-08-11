@@ -11140,10 +11140,15 @@ async function guardarConfigCorredoras() {
 // ═══════════════════════════════════════════════════════════
 // SAVE OPERATIONS (from forms)
 // ═══════════════════════════════════════════════════════════
-async function autoGuardarCliente(rut, nombre, cta, corredora) {
+// permitirCrear=false (default) por diseño: desde el chat (órdenes, aportes,
+// cruces, múltiple) NO se crean clientes ni cuentas nuevas al vuelo -- eso
+// solo pasa desde los Formularios manuales, que sí pasan permitirCrear=true.
+// Antes esto se grababa en Supabase sin que quedara a la vista del operador.
+async function autoGuardarCliente(rut, nombre, cta, corredora, permitirCrear = false) {
+  if (!permitirCrear) return;
   // Validar cuenta: solo dígitos, descartar valores como PH, PM, CN
   const ctaValida = cta && /^\d+$/.test(String(cta).trim()) ? String(cta).trim() : '';
-  
+
   const ex = DB_CLIENTES.find(c => c.rut === rut);
   if (ex) {
     // Verificar si ya tiene esta cuenta+corredora exacta
@@ -11202,7 +11207,7 @@ async function guardarOrden() {
     necesita_ok:false,ok_recibido:false
   };
   
-  await autoGuardarCliente(rut,cliente,row.cta,corredora);
+  await autoGuardarCliente(rut,cliente,row.cta,corredora,true);
   
   // Verificar si sabemos si este cliente necesita OK
   const conoceOK = necesitaOK(cliente);
@@ -11299,7 +11304,7 @@ async function guardarAporte() {
     ejecutado_por:executor,
     necesita_ok:false,ok_recibido:false
   };
-  await autoGuardarCliente(rut,cliente,row.cta,null);
+  await autoGuardarCliente(rut,cliente,row.cta,null,true);
   
   // Verificar si sabemos si este cliente necesita OK
   const conoceOK = necesitaOK(cliente);
@@ -11384,7 +11389,7 @@ async function guardarSaldo() {
   const rut=val('s-rut'),razon=val('s-razon');
   if(!rut||!razon){msg('s-msg','RUT y razón social son obligatorios',false);return;}
   const row={fecha:todayStr(),rut,razon_social:razon,cta:val('s-cta'),agente:val('s-agente'),tipo_cuenta:val('s-tipo'),saldo_disponible:val('s-saldo')||null,instruccion:val('s-inst')};
-  await autoGuardarCliente(rut,razon,row.cta,null);
+  await autoGuardarCliente(rut,razon,row.cta,null,true);
   const{error}=await SB.from('saldos').insert(row);
   if(error){msg('s-msg','Error: '+error.message,false);return;}
   limpiarSaldo();await cargarSaldos();msg('s-msg','✓ Saldo guardado');
