@@ -6403,7 +6403,18 @@ function parseOrden(text, forceOp, opts={}) {
     const navRemove = /\b(?:a(?:l)?\s+)?(?:NAV|valor\s+cuota|VC)\s*(?:con\s+)?(?:(?:\+|-|menos|mas|m[áa]s|premium|descuento)\s*(?:de\s+)?)?(?:\d+[.,]?\d*\s*(?:%|por\s*ciento|pp|punto[s]?)?\s*(?:descuento|premium|menos|m[áa]s|mas|\+|-)?)?/i;
     text = text.replace(navRemove, ' ').replace(/\s+/g,' ').trim();
   }
-  
+
+  // Detectar "a mercado" / "al mercado": el precio lo fija el corredor según lo
+  // que ve en pantalla en ese momento, no es un valor que nosotros calculemos.
+  // El "a"/"al" es obligatorio (no "mercado" suelto) para no chocar con fondos
+  // que tengan "Mercado" en el nombre (ej. "Mercado Pago").
+  let aMercado = false;
+  const mercadoRe = /\ba[l]?\s+mercado\b/i;
+  if (mercadoRe.test(text)) {
+    aMercado = true;
+    text = text.replace(mercadoRe, ' ').replace(/\s+/g,' ').trim();
+  }
+
   const op = forceOp || (/\b(VENTA|VENDER|VENDO)\b/i.test(text) ? 'VENTA' : 'COMPRA');
 
   const {cantidad, precio, monto, navFlag, navDelta, cantidadExplicita} = extractCantidadYPrecio(text);
@@ -6475,6 +6486,7 @@ function parseOrden(text, forceOp, opts={}) {
     clienteResult: clientResult,
     navFlag: navFinalFlag,
     navDelta: navFinalDelta,
+    aMercado,
     conTransferencia: opts.conTransferencia || false,
     ccBanqueros: window._pendingCCBanqueros || null,
     rawText: text
@@ -6697,8 +6709,9 @@ function checkMissingAndConfirm(parsed) {
   const enviaAhora = parsed.enviarEmailOverride === true;
   const requierePrecio = emailAutoActivo || enviaAhora;
   
-  // Precio obligatorio para órdenes solo si va a enviar
-  if (parsed.type === 'orden' && requierePrecio && (!parsed.precio || Number(parsed.precio) <= 0)) {
+  // Precio obligatorio para órdenes solo si va a enviar — salvo "a mercado",
+  // donde el precio lo fija el corredor al momento de ejecutar, no nosotros
+  if (parsed.type === 'orden' && requierePrecio && !parsed.aMercado && (!parsed.precio || Number(parsed.precio) <= 0)) {
     chatContext = {state:'await_missing_field', field:'precio', parsed};
     const isFondo = /^CF[IM]/.test(parsed.nemo||'');
     botMsg(`¿Cuál es el <strong>${isFondo?'valor cuota':'precio'}</strong>? (ej: <em>1055.05</em>, <em>9200</em>)`);
@@ -9205,6 +9218,7 @@ function usarNavEnConfirm() {
   }
   pendingOrder.precio = vc.valor;
   pendingOrder.navFlag = false;
+  pendingOrder.aMercado = false;
   const fechaCorta = vc.fecha.split('-').reverse().join('/');
   const valorFmt = vc.valor.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
   botMsg(`📊 Valor cuota de <strong>${pendingOrder.nemo}</strong> del ${fechaCorta}: <strong>$${valorFmt}</strong>`);
@@ -9229,6 +9243,7 @@ function showParsedConfirm(p) {
       p.cta       ? ['Cuenta',    p.cta]         : null,
       p.corredora ? ['Corredora', p.corredora]   : null,
       p.cantidad  ? ['Cantidad',  Number(p.cantidad).toLocaleString('es-CL')+' acc.'] : null,
+      p.aMercado  ? ['Precio',    '<strong style="color:var(--info)">A MERCADO</strong> · lo fija el corredor'] :
       p.precio    ? ['Precio',    '$'+Number(p.precio).toLocaleString('es-CL')]   : null,
       p.monto && !p.cantidad ? ['Monto aprox.', '$'+Number(p.monto).toLocaleString('es-CL')] : null,
       montoTotal  ? ['Total P×Q',  '<strong style="color:var(--accent)">$'+Math.round(montoTotal).toLocaleString('es-CL')+'</strong>'] : null,
