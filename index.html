@@ -1913,8 +1913,8 @@ const FONDOS_VOCAB_SET = new Set([
 // Detect if a sequence of words looks like a fund name
 // Returns the matched span or null
 function detectFondoSpan(text) {
-  const up = text.toUpperCase();
-  const words = up.split(/\s+/);
+  const up = text.toUpperCase().trim();
+  const words = up.split(/\s+/).filter(Boolean);
   let best = null, bestScore = 0;
 
   // Sliding window of 2-5 words
@@ -6212,7 +6212,10 @@ function extractNemoFromText(text) {
   if (fondoSpan && fondoSpan.length >= 4) {
     const r = buscarFondo(fondoSpan, 0.55);
     if (r.length) {
-      if (r[0].score >= 0.92) return {raw:fondoSpan, result:{resolved:r[0].nemo, exact:false, original:fondoSpan, fondoMatch:r[0]}};
+      // Sólo auto-aceptar si es un único candidato con score alto (mismo criterio
+      // que resolveNemoConFondos) — con varios fondos del mismo banco/serie
+      // empatados en el mismo score, hay que preguntar, no adivinar uno al azar.
+      if (r.length === 1 && r[0].score >= 0.92) return {raw:fondoSpan, result:{resolved:r[0].nemo, exact:false, original:fondoSpan, fondoMatch:r[0]}};
       return {raw:fondoSpan, result:{ambiguous:true, candidates:r.map(x=>x.nemo), fondoCandidates:r, original:fondoSpan}};
     }
   }
