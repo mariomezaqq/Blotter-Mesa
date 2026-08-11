@@ -6943,14 +6943,29 @@ function handleNemoClarify(text) {
     return;
   }
 
+  // Validar que lo que el operador tipeó como aclaración sea realmente un nemo
+  // (fondo CFI/CFM, o ticker de acción — que en Chile no siempre son cortos,
+  // ej. "FALABELLA", "CENCOSUD", "BSANTANDER" son nemos reales de 8+ letras)
+  // y no el nombre de un banco/corredora (ej. "SECURITY", "BCI"). Antes esto
+  // se aceptaba tal cual, así que si alguien tipeaba el banco por error quedaba
+  // grabado como si fuera un nemo real (y hasta se aprendía como alias), y desde
+  // ahí cualquier mención de ese banco resolvía en silencio a ese "nemo" basura.
+  const BANCOS_CORREDORAS = new Set(['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY',
+    'VALUES','RENTA4','MBI','LV','LC','NEVASA','TANNER','SCOTIA']);
+  const nemoFormatOk = (/^CF[IM][A-Z0-9\-]{2,}/.test(nemo) || /^[A-Z][A-Z0-9\-]{1,14}$/.test(nemo))
+    && !BANCOS_CORREDORAS.has(nemo);
+  if (!nemoFormatOk) {
+    botMsg(`"<strong>${nemo}</strong>" no parece un nemo válido (es un banco/corredora, no un fondo ni una acción). Los fondos parten con <strong>CFI</strong> o <strong>CFM</strong>. Escribí el nemo correcto.`);
+    return;
+  }
+
   // Safety: never learn an alias that is too long (full sentence), a stopword,
   // o el nombre de un banco/corredora — esos son ambiguos por naturaleza (varios
   // fondos comparten el mismo prefijo, ej. "BTG"), aprenderlos como alias exacto
   // de UN fondo hace que la próxima vez que alguien diga solo "BTG" resuelva mal
   // en silencio, sin preguntar, aunque sea para un fondo BTG distinto.
   const NEVER_ALIAS = new Set(['DEL','DE','LA','EL','AL','UN','UNA','LOS','LAS','POR','VIA','PARA',
-    'SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY',
-    'VALUES','RENTA4','MBI','LV','LC','NEVASA','TANNER','SCOTIA']);
+    ...BANCOS_CORREDORAS]);
   const raw = (parsed.nemoRaw||'').toUpperCase().trim();
   const shouldLearn = raw && raw !== nemo && raw.length <= 20 && !NEVER_ALIAS.has(raw)
     && !raw.includes(' ') === false || raw.split(' ').length <= 3; // max 3 words as alias
@@ -7049,8 +7064,26 @@ function resolveNemoDisambig(text) {
   const candidates = parsed.nemoResult?.candidates || [];
   const finalNemo  = candidates.find(c => c===nemo || c.startsWith(nemo.slice(0,3))) || nemo;
 
+  const BANCOS_CORREDORAS2 = new Set(['SMB','BTG','CREDICORP','BICE','BCI','ITAU','SANTANDER','LARRAIN','SECURITY',
+    'VALUES','RENTA4','MBI','LV','LC','NEVASA','TANNER','SCOTIA']);
+
+  // Si lo que tipeó no matcheó ninguna de las opciones mostradas, validar que
+  // igual sea un nemo con formato válido antes de aceptarlo (mismo problema
+  // que en handleNemoClarify: aceptar cualquier texto tal cual permitía que
+  // un nombre de banco quedara grabado como si fuera un nemo real). Los tickers
+  // de acciones chilenas no siempre son cortos (ej. "FALABELLA", "CENCOSUD"),
+  // así que no se valida por largo sino por no ser un nombre de banco/corredora.
+  if (!candidates.includes(finalNemo)) {
+    const nemoFormatOk = (/^CF[IM][A-Z0-9\-]{2,}/.test(finalNemo) || /^[A-Z][A-Z0-9\-]{1,14}$/.test(finalNemo))
+      && !BANCOS_CORREDORAS2.has(finalNemo);
+    if (!nemoFormatOk) {
+      botMsg(`"<strong>${finalNemo}</strong>" no parece un nemo válido. Elegí una de las opciones de arriba, o escribí un nemo con formato correcto.`);
+      return;
+    }
+  }
+
   const rawDisambig = (parsed.nemoRaw||'').toUpperCase().trim();
-  const NEVER_ALIAS2 = new Set(['DEL','DE','LA','EL','AL','UN','UNA','LOS','LAS']);
+  const NEVER_ALIAS2 = new Set(['DEL','DE','LA','EL','AL','UN','UNA','LOS','LAS', ...BANCOS_CORREDORAS2]);
   if (rawDisambig && rawDisambig !== finalNemo && rawDisambig.length >= 2
       && rawDisambig.length <= 30 && !NEVER_ALIAS2.has(rawDisambig)) {
     if (!NEMO_ALIASES[finalNemo]) NEMO_ALIASES[finalNemo] = [];
