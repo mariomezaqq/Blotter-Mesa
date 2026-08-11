@@ -9194,6 +9194,23 @@ function parseSaldo(text) {
 // ═══════════════════════════════════════════════════════════
 // CONFIRM CARD — unified display for all order types
 // ═══════════════════════════════════════════════════════════
+// Aplica el valor cuota (NAV) del nemo como precio, al revisar la orden antes
+// de enviarla — sin tener que haber escrito "a NAV" en el mensaje original.
+function usarNavEnConfirm() {
+  if (!pendingOrder || pendingOrder.type !== 'orden' || !pendingOrder.nemo) return;
+  const vc = getValorCuotaNAV(pendingOrder.nemo);
+  if (!vc) {
+    botMsg(`⚠ No tengo valor cuota guardado para <strong>${pendingOrder.nemo}</strong>.`);
+    return;
+  }
+  pendingOrder.precio = vc.valor;
+  pendingOrder.navFlag = false;
+  const fechaCorta = vc.fecha.split('-').reverse().join('/');
+  const valorFmt = vc.valor.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
+  botMsg(`📊 Valor cuota de <strong>${pendingOrder.nemo}</strong> del ${fechaCorta}: <strong>$${valorFmt}</strong>`);
+  showParsedConfirm(pendingOrder);
+}
+
 function showParsedConfirm(p) {
   let rows = [], titleLabel = '', colorStyle = '';
 
@@ -9289,6 +9306,7 @@ function showParsedConfirm(p) {
     ${ccHtml}
     ${overrideHtml}
     <div class="chat-confirm-actions">
+      ${p.type==='orden' && /^CF[IM]/i.test(p.nemo||'') ? `<button class="chat-confirm-btn" onclick="usarNavEnConfirm()" style="background:var(--info-dim);color:var(--info);border:1px solid var(--info)">📊 Usar NAV</button>` : ''}
       <button class="chat-confirm-btn confirm" onclick="confirmarConOverride()">✓ Confirmar</button>
       <button class="chat-confirm-btn cancel"  onclick="handleChatInput('no')">✕ Cancelar</button>
     </div>
