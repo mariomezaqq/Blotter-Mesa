@@ -4131,6 +4131,10 @@ function usarNavEnEditor() {
   }
   precioEl.value = vc.valor;
   autoCalcCantidad();
+  const fechaCorta = vc.fecha.split('-').reverse().join('/');
+  if (avisoValorCuotaAtrasado(vc)) {
+    alert(`⚠ Este valor cuota es del ${fechaCorta} y no es del último día hábil — puede estar desactualizado, verificá antes de enviar.`);
+  }
 }
 
 function autoCalcCantidad() {
@@ -6726,12 +6730,13 @@ function checkMissingAndConfirm(parsed) {
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
       const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
       const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
-      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
+      const aviso = avisoValorCuotaAtrasado(vc) || '';
+      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>${aviso}`;
       if (delta !== 0) {
         const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
         mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
       } else {
-        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
+        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>${aviso}`;
       }
       botMsg(mensaje);
     } else {
@@ -7327,12 +7332,13 @@ function continuarFlujoCruce(parsed) {
       const fechaCorta = vc.fecha.split('-').reverse().join('/');
       const baseFmt = navBase.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
       const finalFmt = parsed.precio.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
-      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>`;
+      const aviso = avisoValorCuotaAtrasado(vc) || '';
+      let mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${baseFmt}</strong>${aviso}`;
       if (delta !== 0) {
         const tipoAjuste = delta < 0 ? 'descuento' : 'premium';
         mensaje += `<br>Con <strong>${Math.abs(delta)}% de ${tipoAjuste}</strong> → precio final: <strong>$${finalFmt}</strong>`;
       } else {
-        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>`;
+        mensaje = `📊 Valor cuota de <strong>${parsed.nemo}</strong> del ${fechaCorta}: <strong>$${finalFmt}</strong>${aviso}`;
       }
       botMsg(mensaje);
     } else {
@@ -9292,7 +9298,8 @@ function usarNavEnConfirm() {
   pendingOrder.aMercado = false;
   const fechaCorta = vc.fecha.split('-').reverse().join('/');
   const valorFmt = vc.valor.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:4});
-  botMsg(`📊 Valor cuota de <strong>${pendingOrder.nemo}</strong> del ${fechaCorta}: <strong>$${valorFmt}</strong>`);
+  const aviso = avisoValorCuotaAtrasado(vc) || '';
+  botMsg(`📊 Valor cuota de <strong>${pendingOrder.nemo}</strong> del ${fechaCorta}: <strong>$${valorFmt}</strong>${aviso}`);
   showParsedConfirm(pendingOrder);
 }
 
